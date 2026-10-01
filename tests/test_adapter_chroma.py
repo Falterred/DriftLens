@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import secrets
 import shutil
 import sqlite3
 import tempfile
@@ -30,9 +32,11 @@ def _limits() -> RuntimeLimits:
 
 @pytest.fixture()
 def workdir() -> Path:
-    base = Path(__file__).parent / "_chroma_tmp"
-    if base.exists():
-        shutil.rmtree(base, ignore_errors=True)
+    # A globally unique directory per invocation keeps a nested in-process pytest
+    # run (the release gate) and any leftover locked directories from colliding.
+    base = (
+        Path(__file__).parent / f"_chroma_tmp_{os.getpid()}_{secrets.token_hex(6)}"
+    )
     base.mkdir(parents=True, exist_ok=True)
     yield base
     shutil.rmtree(base, ignore_errors=True)
