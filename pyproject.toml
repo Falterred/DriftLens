@@ -28,5 +28,8 @@ driftlens = "driftlens.__main__:main"
 include = ["driftlens*"]
 
 [tool.pytest.ini_options]
-markers = ["extras: needs an optional extra"]
+markers = [
+    "extras: needs an optional extra",
+    "benchmark_scale: large benchmark fixture tiers (10K/100K/1M)",
+]
 testpaths = ["tests"]

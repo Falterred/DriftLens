@@ -145,6 +145,18 @@ def build_record(
         if mapping is not None and mapping.document_id
         else None
     )
+    raw_chunk_index = (
+        obj.get(mapping.chunk_index)
+        if mapping is not None and mapping.chunk_index
+        else None
+    )
+    chunk_index = None
+    if raw_chunk_index is not None:
+        if isinstance(raw_chunk_index, bool) or not isinstance(raw_chunk_index, int):
+            raise InvalidInputError(
+                message="chunk_index must be an integer", location=location
+            )
+        chunk_index = int(raw_chunk_index)
 
     created_at = None
     updated_at = None
@@ -175,6 +187,7 @@ def build_record(
         encoding_damage=damage,
         embedding=embedding,
         metadata=metadata,
+        chunk_index=chunk_index,
         created_at=created_at,
         updated_at=updated_at,
         row_number=row_number,
