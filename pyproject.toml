@@ -17,9 +17,9 @@ dependencies = [
 
 [project.optional-dependencies]
 faiss = ["faiss-cpu>=1.7.4"]
-chroma = ["chromadb>=0.5"]
+chroma = ["chromadb==1.5.9"]
 cluster = ["scikit-learn>=1.3", "hdbscan>=0.8.33"]
-dev = ["pytest>=8", "faiss-cpu>=1.7.4", "chromadb==0.6.3", "scikit-learn>=1.3", "hdbscan>=0.8.33"]
+dev = ["pytest>=8", "faiss-cpu>=1.7.4", "chromadb==1.5.9", "scikit-learn>=1.3", "hdbscan>=0.8.33"]
 
 [project.scripts]
 driftlens = "driftlens.__main__:main"
