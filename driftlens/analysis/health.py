@@ -83,6 +83,7 @@ def evaluate_status(
     value: float | None,
     threshold: Threshold | None,
     reason: str | None,
+    borderline: Any | None = None,
 ) -> MetricStatus:
     """Compute the status tag for a single metric (step 21 implementation logic 1)."""
     if not is_threshold_key:
@@ -93,6 +94,11 @@ def evaluate_status(
         return "N/A"
     if threshold is None:
         return "UNBASELINED"
+    if borderline is not None:
+        if threshold.critical is not None:
+            borderline.note(value, threshold.critical)
+        if threshold.warning is not None:
+            borderline.note(value, threshold.warning)
     if threshold.critical is not None and round9(value) > round9(threshold.critical):
         return "FAIL"
     if threshold.warning is not None and round9(value) > round9(threshold.warning):
@@ -113,6 +119,7 @@ def make_metric(
     details: dict[str, Any] | None = None,
     approximate: bool = False,
     is_threshold_key: bool | None = None,
+    borderline: Any | None = None,
 ) -> Metric:
     """Thin constructor deriving is_threshold_key and the status tag."""
     threshold_key = name in THRESHOLD_KEYS if is_threshold_key is None else is_threshold_key
@@ -130,6 +137,7 @@ def make_metric(
             value=value,
             threshold=threshold,
             reason=reason,
+            borderline=borderline,
         ),
         reason=reason,
         sample=sample,
