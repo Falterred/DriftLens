@@ -234,6 +234,7 @@ def assign_identity(
             chunk_level1_id=level1[id(record)],
         )
         record.document_id = result.document_id
+        record._document_identity_level = result.level
         current = document_confidence.get(result.document_id)
         if current is None or _CONFIDENCE_RANK[result.confidence] < _CONFIDENCE_RANK[current]:
             document_confidence[result.document_id] = result.confidence
