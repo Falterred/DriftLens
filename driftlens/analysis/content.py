@@ -8,10 +8,10 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal
 
+from driftlens.analysis.compatibility import match_records_by_identity_key
 from driftlens.analysis.health import Metric, make_metric
 from driftlens.config.schema import Config, DocumentsCfg, TextCfg
 from driftlens.errors import Code, DiagnosticSink, IncompatibleError
-from driftlens.identity.chunks import all_chunk_identity_keys
 from driftlens.identity.documents import Granularity
 from driftlens.identity.hashing import sha256_hex
 from driftlens.schema.manifest import Manifest
@@ -295,15 +295,6 @@ def diff_documents(
     return rows
 
 
-def _key_at_level(record: Record, level: int) -> str | None:
-    keys = all_chunk_identity_keys(
-        record,
-        document_identity_confidence=None,
-        duplicate_rank_within_document=0,
-    )
-    return keys.get(level)
-
-
 def _raw_hashes_equal(a: Record, b: Record) -> bool:
     if a.raw_text_hash is not None or b.raw_text_hash is not None:
         return a.raw_text_hash == b.raw_text_hash
@@ -318,29 +309,23 @@ def classify_chunks(
     shared_documents: set[str],
 ) -> ChunkDiffResult:
     """v0.1 chunk classification: orders 1-3, the identity half of 4, and 6."""
-    level = comparison_level.level
-    v1_by_key: dict[str, Record] = {}
-    v2_by_key: dict[str, Record] = {}
-    for record in v1_records:
-        if record.document_id not in shared_documents:
-            continue
-        key = _key_at_level(record, level)
-        if key is not None:
-            v1_by_key[key] = record
-    for record in v2_records:
-        if record.document_id not in shared_documents:
-            continue
-        key = _key_at_level(record, level)
-        if key is not None:
-            v2_by_key[key] = record
+    v1_filtered = [
+        record for record in v1_records if record.document_id in shared_documents
+    ]
+    v2_filtered = [
+        record for record in v2_records if record.document_id in shared_documents
+    ]
+    matched = match_records_by_identity_key(
+        v1_filtered, v2_filtered, comparison_level
+    )
+    matched_v1 = {id(first) for first, _second in matched}
+    matched_v2 = {id(second) for _first, second in matched}
 
     pairs: list[tuple[Record | None, Record | None, ChunkStatus]] = []
     unmatched_v1: list[Record] = []
     unmatched_v2: list[Record] = []
 
-    for key in sorted(set(v1_by_key) & set(v2_by_key)):
-        first = v1_by_key[key]
-        second = v2_by_key[key]
+    for first, second in matched:
         if _raw_hashes_equal(first, second):
             index_equal = (
                 first.chunk_index == second.chunk_index
@@ -354,13 +339,19 @@ def classify_chunks(
             status = "MODIFIED"
         pairs.append((first, second, status))
 
-    for key in sorted(set(v2_by_key) - set(v1_by_key)):
-        record = v2_by_key[key]
+    remaining_v2 = sorted(
+        (record for record in v2_filtered if id(record) not in matched_v2),
+        key=lambda record: record.record_id,
+    )
+    for record in remaining_v2:
         pairs.append((None, record, "ADDED"))
         unmatched_v2.append(record)
 
-    for key in sorted(set(v1_by_key) - set(v2_by_key)):
-        record = v1_by_key[key]
+    remaining_v1 = sorted(
+        (record for record in v1_filtered if id(record) not in matched_v1),
+        key=lambda record: record.record_id,
+    )
+    for record in remaining_v1:
         pairs.append((record, None, "REMOVED"))
         unmatched_v1.append(record)
 
