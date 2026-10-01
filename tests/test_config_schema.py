@@ -7,6 +7,7 @@ import pytest
 from driftlens.config.schema import (
     THRESHOLD_KEYS,
     default_config,
+    resolved_max_workers,
     validate_config,
 )
 from driftlens.errors import InvalidInputError, LimitExceededError
@@ -38,6 +39,21 @@ def test_primary_metric_validation() -> None:
 
     cfg.retrieval.primary_metric = "hit_rate@10"
     validate_config(cfg)
+
+
+def test_auto_workers_floor_at_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("driftlens.config.schema.os.cpu_count", lambda: 1)
+    cfg = default_config()
+    assert cfg.analysis.workers == 4
+    assert resolved_max_workers(cfg) == 4
+    validate_config(cfg)
+
+    monkeypatch.setattr("driftlens.config.schema.os.cpu_count", lambda: None)
+    assert resolved_max_workers(cfg) == 4
+    validate_config(cfg)
+
+    monkeypatch.setattr("driftlens.config.schema.os.cpu_count", lambda: 128)
+    assert resolved_max_workers(cfg) == 64
 
 
 def test_workers_ceiling() -> None:

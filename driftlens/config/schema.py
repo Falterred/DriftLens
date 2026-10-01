@@ -302,7 +302,7 @@ def resolved_max_workers(cfg: Config) -> int:
 
     limit = cfg.limits.max_workers
     if limit == "auto":
-        return min(os.cpu_count() or 1, 64)
+        return min(max(os.cpu_count() or 1, AnalysisCfg.workers), 64)
     return int(limit)
 
 
