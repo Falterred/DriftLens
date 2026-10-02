@@ -16,7 +16,8 @@ from driftlens.analysis.compatibility import (
 )
 from driftlens.analysis.embeddings import EmbeddingSnapshotSummary
 from driftlens.analysis.health import Metric, SampleInfo, make_metric, round9
-from driftlens.analysis.sampling import hash_threshold_sample, to_sample_info
+from driftlens.analysis.sampling import hash_threshold_sample, nested_subsample, to_sample_info
+from driftlens.analysis.significance import SignificanceResult, compute_significance
 from driftlens.config.schema import AnalysisCfg, Config
 from driftlens.errors import DiagnosticSink
 from driftlens.schema.snapshot import Snapshot
@@ -79,6 +80,35 @@ def _subset(
     if not rows:
         return np.empty((0, vectors.shape[1]), dtype=np.float64)
     return np.asarray(rows, dtype=np.float64)
+
+
+def _mmd_from_kernel(
+    kernel_matrix: np.ndarray, v1_indices: Sequence[int], v2_indices: Sequence[int]
+) -> float:
+    """Unbiased MMD statistic recomputed by reindexing a fixed kernel matrix."""
+
+    kernel = np.asarray(kernel_matrix, dtype=np.float64)
+    m = len(v1_indices)
+    n = len(v2_indices)
+    if m < 2 or n < 2:
+        return 0.0
+    kxx = kernel[np.ix_(list(v1_indices), list(v1_indices))]
+    kyy = kernel[np.ix_(list(v2_indices), list(v2_indices))]
+    kxy = kernel[np.ix_(list(v1_indices), list(v2_indices))]
+    sum_xx = (kxx.sum() - np.trace(kxx)) / (m * (m - 1))
+    sum_yy = (kyy.sum() - np.trace(kyy)) / (n * (n - 1))
+    sum_xy = kxy.sum() / (m * n)
+    return math.sqrt(max(float(sum_xx + sum_yy - 2 * sum_xy), 0.0))
+
+
+def mmd_permutation_statistic_fn(
+    kernel_matrix: np.ndarray, partition
+) -> float:
+    """statistic_fn closure body reused by both permutation test and bootstrap."""
+
+    return _mmd_from_kernel(
+        kernel_matrix, partition.v1_indices, partition.v2_indices
+    )
 
 
 def compute_mmd(
@@ -183,6 +213,52 @@ def _analysis_vectors(
     return np.vstack(vectors), ids
 
 
+def _mmd_significance(
+    v1: Snapshot,
+    v2: Snapshot,
+    v1_vectors: np.ndarray,
+    v2_vectors: np.ndarray,
+    v1_ids: Sequence[str],
+    v2_ids: Sequence[str],
+    *,
+    cfg: Config,
+    sigma: float,
+    observed: float,
+) -> SignificanceResult:
+    """Build one combined kernel and run the seeded permutation/bootstrap test."""
+
+    sample = hash_threshold_sample(
+        cfg.analysis.seed, cfg.analysis.sample_size, list(v1_ids), list(v2_ids)
+    )
+    kept_v1 = [record_id for record_id in v1_ids if record_id in sample.v1_ids]
+    kept_v2 = [record_id for record_id in v2_ids if record_id in sample.v2_ids]
+    if len(kept_v1) > cfg.significance.max_n or len(kept_v2) > cfg.significance.max_n:
+        deeper = nested_subsample(
+            cfg.analysis.seed, cfg.significance.max_n, kept_v1, kept_v2
+        )
+        kept_v1 = [record_id for record_id in kept_v1 if record_id in deeper.v1_ids]
+        kept_v2 = [record_id for record_id in kept_v2 if record_id in deeper.v2_ids]
+
+    first = _subset(np.asarray(v1_vectors, dtype=np.float64), v1_ids, frozenset(kept_v1))
+    second = _subset(np.asarray(v2_vectors, dtype=np.float64), v2_ids, frozenset(kept_v2))
+    kernel = rbf_kernel_matrix(np.vstack([first, second]), np.vstack([first, second]), float(sigma))
+
+    id_confidence: dict[str, str] = {}
+    for record in list(v1.records) + list(v2.records):
+        if record.identity_confidence is not None:
+            id_confidence[record.record_id] = record.identity_confidence
+
+    return compute_significance(
+        v1_ids=kept_v1,
+        v2_ids=kept_v2,
+        id_confidence=id_confidence,
+        statistic_fn=lambda partition: mmd_permutation_statistic_fn(kernel, partition),
+        observed=observed,
+        cfg=cfg.significance,
+        seed=cfg.analysis.seed,
+    )
+
+
 def compare_mmd(
     v1: Snapshot,
     v2: Snapshot,
@@ -222,12 +298,31 @@ def compare_mmd(
         getattr(v1, "vectors_approximate", False)
         or getattr(v2, "vectors_approximate", False)
     )
+    details: dict[str, object] = {
+        "sigma": result.sigma,
+        "estimator": result.estimator,
+    }
+    if result.reason is None and result.mmd is not None and result.sigma:
+        significance = _mmd_significance(
+            v1,
+            v2,
+            v1_vectors,
+            v2_vectors,
+            v1_ids,
+            v2_ids,
+            cfg=cfg,
+            sigma=float(result.sigma),
+            observed=result.mmd,
+        )
+        details["p_value"] = significance.p_value
+        details["test_design"] = significance.design
+        details["ci_95"] = [significance.ci_low, significance.ci_high]
     return make_metric(
         "mmd",
         value=result.mmd,
         threshold=cfg.drift["mmd"],
         reason=result.reason,
         sample=result.sample_v1,
-        details={"sigma": result.sigma, "estimator": result.estimator},
+        details=details,
         approximate=approximate,
     )

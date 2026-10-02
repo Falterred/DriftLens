@@ -53,6 +53,7 @@ RELEASE_0_1_MODULES = [
     "driftlens.analysis.compatibility",
     "driftlens.analysis.duplicates",
     "driftlens.analysis.mmd",
+    "driftlens.analysis.significance",
     "driftlens.reports.json",
     "driftlens.reports.terminal",
     "driftlens.cli.compare",

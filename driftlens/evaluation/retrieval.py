@@ -10,6 +10,7 @@ from driftlens.analysis.compatibility import CompatibilityResult
 from driftlens.analysis.content import ComparisonLevelResult
 from driftlens.analysis.embeddings import EmbeddingSnapshotSummary
 from driftlens.analysis.health import Metric, make_metric
+from driftlens.analysis.significance import bootstrap_ci
 from driftlens.config.schema import Config
 from driftlens.errors import (
     Code,
@@ -152,7 +153,13 @@ def _mean(values: list[float | None]) -> float | None:
     return sum(present) / len(present)
 
 
-def _metric(name: str, v1_value: float | None, v2_value: float | None) -> Metric:
+def _metric(
+    name: str,
+    v1_value: float | None,
+    v2_value: float | None,
+    *,
+    details: dict[str, object] | None = None,
+) -> Metric:
     change = (
         None if v1_value is None or v2_value is None else v2_value - v1_value
     )
@@ -163,7 +170,47 @@ def _metric(name: str, v1_value: float | None, v2_value: float | None) -> Metric
         v1=v1_value,
         v2=v2_value,
         change=change,
+        details=details,
     )
+
+
+def _ci_details(
+    v1_values: list[float | None],
+    v2_values: list[float | None],
+    *,
+    cfg: Config,
+    seed: int,
+) -> dict[str, object] | None:
+    """Percentile CI for the v2-v1 change, resampling whole cases together."""
+
+    if not v1_values or len(v1_values) != len(v2_values):
+        return None
+    if _mean(v1_values) is None or _mean(v2_values) is None:
+        return None
+    n_cases = len(v1_values)
+
+    def statistic_fn(partition) -> float:
+        total = 0.0
+        count = 0
+        for index in partition.v1_indices:
+            first = v1_values[index]
+            second = v2_values[index]
+            if first is None or second is None:
+                continue
+            total += second - first
+            count += 1
+        return total / count if count else 0.0
+
+    ci = bootstrap_ci(
+        statistic_fn=statistic_fn,
+        n_v1=n_cases,
+        n_v2=n_cases,
+        cfg=cfg.significance,
+        seed=seed,
+    )
+    if ci is None:
+        return None
+    return {"ci_95": [ci[0], ci[1]]}
 
 
 def _search_both(
@@ -252,25 +299,50 @@ def _evaluate_mode(
 
     metrics: dict[str, Metric] = {}
     for k in cfg.retrieval.k:
+        recall_v1 = [
+            recall_at_k(row.document_ranked_v1, row.present_document_ids, k)
+            for row in rows
+        ]
+        recall_v2 = [
+            recall_at_k(row.document_ranked_v2, row.present_document_ids, k)
+            for row in rows
+        ]
         metrics[f"recall@{k}"] = _metric(
             f"recall@{k}",
-            _mean([recall_at_k(row.document_ranked_v1, row.present_document_ids, k) for row in rows]),
-            _mean([recall_at_k(row.document_ranked_v2, row.present_document_ids, k) for row in rows]),
+            _mean(recall_v1),
+            _mean(recall_v2),
+            details=_ci_details(recall_v1, recall_v2, cfg=cfg, seed=cfg.analysis.seed),
         )
+        hit_v1 = [
+            hit_rate_at_k(row.document_ranked_v1, row.present_document_ids, k)
+            for row in rows
+        ]
+        hit_v2 = [
+            hit_rate_at_k(row.document_ranked_v2, row.present_document_ids, k)
+            for row in rows
+        ]
         metrics[f"hit_rate@{k}"] = _metric(
             f"hit_rate@{k}",
-            _mean([hit_rate_at_k(row.document_ranked_v1, row.present_document_ids, k) for row in rows]),
-            _mean([hit_rate_at_k(row.document_ranked_v2, row.present_document_ids, k) for row in rows]),
+            _mean(hit_v1),
+            _mean(hit_v2),
+            details=_ci_details(hit_v1, hit_v2, cfg=cfg, seed=cfg.analysis.seed),
         )
         metrics[f"chunk_recall@{k}"] = _metric(
             f"chunk_recall@{k}",
             _mean([chunk_recall_at_k(row.chunk_ranked_v1, row.present_chunk_ids, k) for row in rows]),
             _mean([chunk_recall_at_k(row.chunk_ranked_v2, row.present_chunk_ids, k) for row in rows]),
         )
+    mrr_v1 = [
+        mrr_at_kmax(row.chunk_ranked_v1, row.present_document_ids, kmax) for row in rows
+    ]
+    mrr_v2 = [
+        mrr_at_kmax(row.chunk_ranked_v2, row.present_document_ids, kmax) for row in rows
+    ]
     metrics["mrr"] = _metric(
         "mrr",
-        _mean([mrr_at_kmax(row.chunk_ranked_v1, row.present_document_ids, kmax) for row in rows]),
-        _mean([mrr_at_kmax(row.chunk_ranked_v2, row.present_document_ids, kmax) for row in rows]),
+        _mean(mrr_v1),
+        _mean(mrr_v2),
+        details=_ci_details(mrr_v1, mrr_v2, cfg=cfg, seed=cfg.analysis.seed),
     )
     metrics["avg_top_k_similarity"] = _metric(
         "avg_top_k_similarity",
