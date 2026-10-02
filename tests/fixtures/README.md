@@ -2,6 +2,11 @@
 
 - `generator.py` builds seeded corpus pairs (`generate_corpus_pair`) and writes
   them as JSONL/JSON/CSV/Parquet (`write_corpus_as`).
+- `generator.py` also plants known duplicate groups (`generate_duplicate_corpus`)
+  and retrieval eval fixtures (`generate_retrieval_eval_fixture`) for the
+  Release-1.0 benchmark suites.
+- `benchmark_results.json` records the wall-clock time of the 1M-scale tier when
+  it is run with `pytest -m benchmark_scale`; no numeric time bound is asserted.
 - `embedding_fixtures.py` builds FAISS/Chroma fixtures for the adapter tests.
 - `adapter_fixtures/` holds one subfolder per input format for on-disk fixtures
   that need to be checked in; most fixtures are generated at runtime instead.

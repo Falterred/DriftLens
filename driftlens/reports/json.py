@@ -13,6 +13,9 @@ from driftlens.config.schema import PRIVACY_MAX_LABEL_CATEGORIES, Config
 from driftlens.errors import DiagnosticSink
 from driftlens.schema.manifest import Manifest
 
+# Frozen for DriftLens 1.0 (Step 51): additive fields only may bump the
+# minor; any other change requires a new major schema (out of 1.x).
+# See docs/schema-versioning.md.
 REPORT_SCHEMA_VERSION = "1.0"
 
 

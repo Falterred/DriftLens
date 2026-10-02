@@ -7,6 +7,9 @@ from typing import Any
 
 from driftlens.identity.documents import Granularity, GranularitySource
 
+# Frozen for DriftLens 1.0 (Step 51): additive fields only may bump the
+# minor; any other change requires a new major schema (out of 1.x).
+# See docs/schema-versioning.md.
 SNAPSHOT_SCHEMA_VERSION = "1.0"
 
 
