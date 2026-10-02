@@ -250,11 +250,13 @@ def diff_documents(
     *,
     cfg: DocumentsCfg,
     metadata_changed_ids: set[str] | None = None,
+    timestamp_inconsistent_ids: set[str] | None = None,
 ) -> list[DocumentDiffRow]:
     """Classify every document id in the union of the two tables (section 5.1)."""
     union = list(v1_docs.rows)
     union.extend(doc_id for doc_id in v2_docs.rows if doc_id not in v1_docs.rows)
     changed_ids = metadata_changed_ids or set()
+    inconsistent_ids = timestamp_inconsistent_ids or set()
     rows: list[DocumentDiffRow] = []
 
     for document_id in union:
@@ -288,7 +290,7 @@ def diff_documents(
                 document_id=document_id,
                 status=status,
                 metadata_changed=document_id in changed_ids,
-                timestamp_inconsistent=False,
+                timestamp_inconsistent=document_id in inconsistent_ids,
                 reconstruction_confidence_v1=(
                     recon1.reconstruction_confidence if recon1 is not None else None
                 ),
