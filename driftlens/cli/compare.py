@@ -18,6 +18,7 @@ from driftlens.adapters.json import load_json
 from driftlens.adapters.jsonl import LoadedInput, load_jsonl
 from driftlens.adapters.parquet import load_parquet
 from driftlens.analysis.chunking import compare_chunking
+from driftlens.analysis.clusters import compare_clusters
 from driftlens.analysis.compatibility import (
     apply_strict_compat,
     determine_compatibility_state,
@@ -589,6 +590,17 @@ def run_compare(args: argparse.Namespace) -> int:
             sink=sink,
         )
 
+    with guarded("analysis:clusters"):
+        semantic_metrics = compare_clusters(
+            v1_snapshot,
+            v2_snapshot,
+            compat=compat,
+            v1_summary=v1_summary,
+            v2_summary=v2_summary,
+            cfg=cfg,
+            sink=sink,
+        )
+
     eval_set = None
     resolved_cases: list[ResolvedCase] = []
     retrieval_modes: list[str] = []
@@ -632,7 +644,7 @@ def run_compare(args: argparse.Namespace) -> int:
         "chunking": chunking_metrics,
         "metadata": metadata_metrics,
         "embedding": [mmd_metric],
-        "semantic": [],
+        "semantic": semantic_metrics,
         "duplication": duplication_metrics,
         "retrieval": retrieval_metrics,
     }
