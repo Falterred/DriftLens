@@ -34,6 +34,10 @@ def main(argv: list[str] | None = None) -> int:
             from driftlens.cli.snapshot import run_snapshot
 
             return run_snapshot(args)
+        if command == "baseline":
+            from driftlens.cli.baseline import run_baseline_build
+
+            return run_baseline_build(args)
         raise InvalidInputError(
             message=f"the '{command}' command is not available until a later release"
         )

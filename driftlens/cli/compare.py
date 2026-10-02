@@ -17,6 +17,7 @@ from driftlens.adapters.faiss import load_faiss
 from driftlens.adapters.json import load_json
 from driftlens.adapters.jsonl import LoadedInput, load_jsonl
 from driftlens.adapters.parquet import load_parquet
+from driftlens.analysis.baselines import apply_baseline, load_baseline
 from driftlens.analysis.chunking import compare_chunking
 from driftlens.analysis.clusters import compare_clusters
 from driftlens.analysis.compatibility import (
@@ -84,7 +85,7 @@ from driftlens.security.redaction import apply_redaction_to_metric
 from driftlens.text.normalize import normalization_version
 from driftlens.text.tokenizer import tokenizer_id
 
-_UNIMPLEMENTED_FLAGS = ("baseline",)
+_UNIMPLEMENTED_FLAGS: tuple[str, ...] = ()
 
 _SIDE_OPTION_FLAGS = (
     "id_field",
@@ -177,9 +178,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     build_arg_parser_snapshot_subcommand(subparsers)
 
-    baseline = subparsers.add_parser("baseline", help="baseline management")
-    baseline.add_argument("input", nargs="?")
-    baseline.add_argument("--out")
+    from driftlens.cli.baseline import build_arg_parser_baseline_subcommand
+
+    build_arg_parser_baseline_subcommand(subparsers)
 
     return parser
 
@@ -429,6 +430,9 @@ def run_compare(args: argparse.Namespace) -> int:
     config_path = Path(args.config) if getattr(args, "config", None) else None
     cfg = load_config(config_path, cli, Path.cwd())
     _reject_unimplemented(args)
+    baseline_file = None
+    if getattr(args, "baseline", None):
+        baseline_file = load_baseline(Path(args.baseline))
     sink = DiagnosticSink()
     limits = RuntimeLimits(cfg.limits)
     borderline = BorderlineCounter()
@@ -504,6 +508,15 @@ def run_compare(args: argparse.Namespace) -> int:
     if getattr(args, "verify_full", False):
         _verify_full(v1_snapshot)
         _verify_full(v2_snapshot)
+
+    if baseline_file is not None:
+        cfg = apply_baseline(
+            cfg,
+            baseline_file,
+            v1_manifest=v1_snapshot.manifest,
+            v2_manifest=v2_snapshot.manifest,
+            sink=sink,
+        )
 
     # Stage 5 - compatibility.
     comparison_level = determine_comparison_level(

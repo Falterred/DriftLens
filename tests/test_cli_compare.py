@@ -83,12 +83,11 @@ def test_unsafe_pickle_rejected_under_ci(workdir):
     assert info.value.exit_code == 3
 
 
-def test_unimplemented_flag_baseline_rejected(workdir):
+def test_baseline_missing_file_rejected(workdir):
     first, second = _valid_pair(workdir)
     with pytest.raises(InvalidInputError) as info:
         _run(["compare", str(first), str(second), "--baseline", "foo.json"])
-    assert "--baseline" in str(info.value)
-    assert "not available" in str(info.value)
+    assert "baseline" in str(info.value)
 
 
 def test_simple_compare_end_to_end_pass(workdir, capsys):
