@@ -68,6 +68,8 @@ SUPPORTING_MODULES = frozenset(
         "driftlens.adapters._embedding_codec",
         "driftlens.adapters.snapshot",
         "driftlens.cli.snapshot",
+        "driftlens.evaluation.metrics",
+        "driftlens.evaluation.retrievers",
     }
 )
 
