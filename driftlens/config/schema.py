@@ -202,6 +202,9 @@ class RetrievalCfg:
     eval_set: str | None = None
     min_similarity: float | None = None
     bm25: Bm25Cfg = field(default_factory=Bm25Cfg)
+    # ANN is opt-in: the default equals limits.max_records, so dense retrieval
+    # only switches to an approximate index once a user explicitly lowers it.
+    ann_threshold: int = 10_000_000
 
 
 @dataclass

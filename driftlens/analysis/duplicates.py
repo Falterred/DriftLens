@@ -9,11 +9,17 @@ from __future__ import annotations
 import itertools
 from collections import defaultdict
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Literal
 
 import numpy as np
 
+from driftlens.analysis.ann import (
+    SEMANTIC_ANN_TOP_K,
+    AnnBuildParams,
+    ann_available,
+    build_ann_index,
+)
 from driftlens.analysis.health import Metric, SampleInfo, make_metric
 from driftlens.analysis.sampling import hash_threshold_sample, to_sample_info
 from driftlens.config.schema import DuplicatesCfg, TextCfg, Threshold
@@ -355,6 +361,45 @@ def _cosine(left: np.ndarray, right: np.ndarray) -> float:
     return float(np.dot(left, right))
 
 
+def _semantic_groups_ann(
+    units_list: list[DuplicateUnit],
+    embed_units: list[DuplicateUnit],
+    *,
+    cfg: DuplicatesCfg,
+    threshold: float,
+    seed: int,
+    ann_params_out: list[AnnBuildParams] | None,
+) -> tuple[list[DuplicateGroup], list[DuplicateUnit]]:
+    """Opt-in ANN semantic grouping over every eligible representative."""
+    adjacent = _build_adjacent_exclusion_set(embed_units, cfg)
+    matrix = np.asarray(
+        [
+            _normalized_vector(unit.representative.embedding.vector)
+            for unit in embed_units
+        ],
+        dtype=float,
+    )
+    index = build_ann_index(matrix, metric="cosine", seed=seed)
+    if ann_params_out is not None:
+        ann_params_out.append(index.build_params)
+
+    verified: set[frozenset[str]] = set()
+    for position, hits in enumerate(
+        index.search(matrix, top_k=SEMANTIC_ANN_TOP_K)
+    ):
+        left = embed_units[position]
+        for neighbour, score in hits:
+            if neighbour == position:
+                continue
+            right = embed_units[neighbour]
+            pair = frozenset({left.unit_id, right.unit_id})
+            if pair in adjacent:
+                continue
+            if score >= threshold:
+                verified.add(pair)
+    return _build_groups_and_units(units_list, verified, "semantic")
+
+
 def compute_semantic_groups(
     units: Sequence[DuplicateUnit],
     *,
@@ -362,8 +407,17 @@ def compute_semantic_groups(
     threshold: float,
     similarity_metric_known: bool,
     seed: int,
+    use_ann: bool = False,
+    ann_params_out: list[AnnBuildParams] | None = None,
 ) -> tuple[list[DuplicateGroup], list[DuplicateUnit]]:
-    """Exhaustive cosine on L2-normalized representative vectors (stage 3)."""
+    """Cosine on L2-normalized representative vectors (stage 3).
+
+    The default path is exhaustive; ``use_ann`` opts into a single-threaded
+    FAISS IVF index over every eligible representative once the pool reaches
+    ``cfg.max_exact_vectors`` (that path does not sample).  The exact stage
+    upstream already caps its own pool at that same threshold, so the chained
+    pipeline reaches equality rather than strictly exceeding it.
+    """
     units_list = list(units)
     if not similarity_metric_known:
         return [], units_list
@@ -376,6 +430,21 @@ def compute_semantic_groups(
         if float(np.linalg.norm(np.asarray(embedding.vector, dtype=float))) == 0.0:
             continue
         embed_units.append(unit)
+
+    if (
+        use_ann
+        and embed_units
+        and len(embed_units) >= cfg.max_exact_vectors
+        and ann_available()
+    ):
+        return _semantic_groups_ann(
+            units_list,
+            embed_units,
+            cfg=cfg,
+            threshold=threshold,
+            seed=seed,
+            ann_params_out=ann_params_out,
+        )
 
     if len(embed_units) > cfg.max_exact_vectors:
         sampled = hash_threshold_sample(
@@ -414,6 +483,8 @@ def compute_all_duplicate_stages(
     similarity_metric_known: bool,
     seed: int,
     text_cfg: TextCfg | None = None,
+    use_ann: bool = False,
+    ann_params_out: list[AnnBuildParams] | None = None,
 ) -> ExtendedDuplicateResult:
     """Exact (Step 29) -> near -> semantic, chained over one unit list."""
     if text_cfg is None:
@@ -432,6 +503,8 @@ def compute_all_duplicate_stages(
         threshold=semantic_threshold,
         similarity_metric_known=similarity_metric_known,
         seed=seed,
+        use_ann=use_ann,
+        ann_params_out=ann_params_out,
     )
 
     total = exact_result.total_chunks
@@ -492,8 +565,11 @@ def compare_duplicates(
     near_threshold: float = 0.90,
     semantic_threshold: float = 0.98,
     similarity_metric_known: bool = False,
+    use_ann: bool = False,
 ) -> tuple[ExtendedDuplicateResult, ExtendedDuplicateResult, list[Metric]]:
     """All three duplicate classes for both snapshots plus DUPLICATION metrics."""
+    ann_params_v1: list[AnnBuildParams] = []
+    ann_params_v2: list[AnnBuildParams] = []
     v1_result = compute_all_duplicate_stages(
         v1.records,
         cfg=cfg,
@@ -502,6 +578,8 @@ def compare_duplicates(
         similarity_metric_known=similarity_metric_known,
         seed=seed,
         text_cfg=text_cfg,
+        use_ann=use_ann,
+        ann_params_out=ann_params_v1,
     )
     v2_result = compute_all_duplicate_stages(
         v2.records,
@@ -511,7 +589,12 @@ def compare_duplicates(
         similarity_metric_known=similarity_metric_known,
         seed=seed,
         text_cfg=text_cfg,
+        use_ann=use_ann,
+        ann_params_out=ann_params_v2,
     )
+
+    ann_params = ann_params_v2 or ann_params_v1
+    ann_details = {"ann": asdict(ann_params[0])} if ann_params else None
 
     rate_change = v2_result.duplicate_rate_total - v1_result.duplicate_rate_total
     metrics: list[Metric] = [
@@ -547,6 +630,7 @@ def compare_duplicates(
             v2=v2_result.duplicate_rate_semantic,
             change=v2_result.duplicate_rate_semantic
             - v1_result.duplicate_rate_semantic,
+            details=ann_details,
         ),
         _count_metric(
             "duplicate_groups",

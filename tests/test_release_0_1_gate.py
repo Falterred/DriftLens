@@ -69,6 +69,7 @@ RELEASE_0_1_MODULES = [
 SUPPORTING_MODULES = frozenset(
     {
         "driftlens",
+        "driftlens.analysis.ann",
         "driftlens.adapters._embedding_codec",
         "driftlens.adapters.snapshot",
         "driftlens.cli.ci",
@@ -134,6 +135,7 @@ WARNING_FIXTURES = {
     Code.RENORMALIZED: "vectors renormalized before analysis",
     Code.PICKLE_IGNORED: "LangChain pickle not opened",
     Code.FIELD_CANDIDATES_IGNORED: "lower-priority field candidates ignored",
+    Code.ANN_UNAVAILABLE_FALLBACK_EXACT: "--ann without faiss falls back to exact",
 }
 
 _ROOT = Path(__file__).resolve().parents[1]

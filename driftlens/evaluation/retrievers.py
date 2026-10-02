@@ -9,6 +9,7 @@ from typing import Literal, Sequence
 
 import numpy as np
 
+from driftlens.analysis.ann import AnnIndex, ann_available, build_ann_index
 from driftlens.analysis.neighbours import score_pair
 from driftlens.config.schema import Bm25Cfg
 from driftlens.schema.record import Record
@@ -107,6 +108,9 @@ class DenseProvidedIndex:
         records: Sequence[Record],
         *,
         metric: Literal["cosine", "dot", "l2"],
+        use_ann: bool = False,
+        ann_threshold: int | None = None,
+        ann_seed: int = 0,
     ) -> None:
         self._metric = metric
         self._entries: list[tuple[str, str, np.ndarray]] = []
@@ -120,8 +124,31 @@ class DenseProvidedIndex:
             self._entries.append(
                 (record.record_id, _owning_document_id(record), vector)
             )
+        self._ann: AnnIndex | None = None
+        if (
+            use_ann
+            and ann_threshold is not None
+            and len(self._entries) > ann_threshold
+            and ann_available()
+        ):
+            matrix = np.asarray(
+                [vector for _, _, vector in self._entries], dtype=np.float64
+            )
+            self._ann = build_ann_index(matrix, metric=metric, seed=ann_seed)
 
     def search(self, query_vector: np.ndarray, *, top_k: int) -> list[RankedResult]:
+        if self._ann is not None:
+            hits = self._ann.search(
+                np.asarray(query_vector, dtype=np.float64), top_k=top_k
+            )[0]
+            return [
+                RankedResult(
+                    record_id=self._entries[index][0],
+                    document_id=self._entries[index][1],
+                    score=score,
+                )
+                for index, score in hits
+            ]
         query = np.asarray(query_vector, dtype=np.float64)
         results: list[RankedResult] = []
         for record_id, document_id, vector in self._entries:

@@ -253,6 +253,7 @@ def _evaluate_mode(
     v1_summary: EmbeddingSnapshotSummary,
     v2_summary: EmbeddingSnapshotSummary,
     sink: DiagnosticSink,
+    use_ann: bool = False,
 ) -> PerModeResult:
     if mode == "lexical":
         index_v1 = BM25Index(
@@ -263,10 +264,18 @@ def _evaluate_mode(
         )
     else:
         index_v1 = DenseProvidedIndex(
-            v1.records, metric=v1_summary.similarity_metric  # type: ignore[arg-type]
+            v1.records,
+            metric=v1_summary.similarity_metric,  # type: ignore[arg-type]
+            use_ann=use_ann,
+            ann_threshold=cfg.retrieval.ann_threshold,
+            ann_seed=cfg.analysis.seed,
         )
         index_v2 = DenseProvidedIndex(
-            v2.records, metric=v2_summary.similarity_metric  # type: ignore[arg-type]
+            v2.records,
+            metric=v2_summary.similarity_metric,  # type: ignore[arg-type]
+            use_ann=use_ann,
+            ann_threshold=cfg.retrieval.ann_threshold,
+            ann_seed=cfg.analysis.seed,
         )
 
     kmax = max(cfg.retrieval.k)
@@ -377,6 +386,7 @@ def run_retrieval_comparison(
     v2_summary: EmbeddingSnapshotSummary,
     comparison_level: ComparisonLevelResult,
     sink: DiagnosticSink,
+    use_ann: bool = False,
 ) -> RetrievalComparisonResult:
     """Resolve ground truth and run every selected retriever (section 11.4)."""
 
@@ -429,6 +439,7 @@ def run_retrieval_comparison(
                 v1_summary=v1_summary,
                 v2_summary=v2_summary,
                 sink=sink,
+                use_ann=use_ann,
             )
             for mode in modes
         ]

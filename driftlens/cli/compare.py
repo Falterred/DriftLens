@@ -17,6 +17,7 @@ from driftlens.adapters.faiss import load_faiss
 from driftlens.adapters.json import load_json
 from driftlens.adapters.jsonl import LoadedInput, load_jsonl
 from driftlens.adapters.parquet import load_parquet
+from driftlens.analysis.ann import ann_available
 from driftlens.analysis.baselines import apply_baseline, load_baseline
 from driftlens.analysis.chunking import compare_chunking
 from driftlens.analysis.clusters import compare_clusters
@@ -37,6 +38,7 @@ from driftlens.analysis.mmd import compare_mmd
 from driftlens.config.loader import effective_side_options, load_config
 from driftlens.config.schema import Config, SideOptions
 from driftlens.errors import (
+    Code,
     DependencyMissingError,
     DiagnosticSink,
     DriftLensError,
@@ -144,6 +146,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--allow-unsafe-pickle", dest="allow_unsafe_pickle", action="store_true"
     )
     compare.add_argument("--ci", action="store_true")
+    compare.add_argument("--ann", action="store_true")
     compare.add_argument("--strict-compat", dest="strict_compat", action="store_true")
     compare.add_argument("--clusters", dest="cluster.mode", choices=["auto", "on", "off"])
     compare.add_argument(
@@ -372,6 +375,7 @@ def _retrieval_rank_maps(
     cfg: Config,
     v1_summary: Any,
     v2_summary: Any,
+    use_ann: bool = False,
 ) -> tuple[dict[str, int | None], dict[str, int | None]]:
     """First-relevant chunk rank per case for the exported retrieval diff.
 
@@ -387,8 +391,20 @@ def _retrieval_rank_maps(
             v2.records, cfg=cfg.retrieval.bm25, casefold=cfg.text.casefold
         )
     elif mode == "dense":
-        index_v1 = DenseProvidedIndex(v1.records, metric=v1_summary.similarity_metric)
-        index_v2 = DenseProvidedIndex(v2.records, metric=v2_summary.similarity_metric)
+        index_v1 = DenseProvidedIndex(
+            v1.records,
+            metric=v1_summary.similarity_metric,
+            use_ann=use_ann,
+            ann_threshold=cfg.retrieval.ann_threshold,
+            ann_seed=cfg.analysis.seed,
+        )
+        index_v2 = DenseProvidedIndex(
+            v2.records,
+            metric=v2_summary.similarity_metric,
+            use_ann=use_ann,
+            ann_threshold=cfg.retrieval.ann_threshold,
+            ann_seed=cfg.analysis.seed,
+        )
     else:
         return {}, {}
     kmax = max(cfg.retrieval.k)
@@ -461,6 +477,13 @@ def run_compare(args: argparse.Namespace) -> int:
         else getattr(args, "cluster.mode")
     )
     check_dependencies(format_a, format_b, clusters_mode=clusters_mode)
+    ann_requested = bool(getattr(args, "ann", False))
+    use_ann = ann_requested and ann_available()
+    if ann_requested and not use_ann:
+        sink.add(
+            Code.ANN_UNAVAILABLE_FALLBACK_EXACT,
+            "faiss is unavailable; --ann falls back to exact search",
+        )
 
     # Stage 4 - load and validation (sequential; one side fully completes first).
     # A written snapshot directory already carries a Snapshot; it is passed
@@ -591,6 +614,7 @@ def run_compare(args: argparse.Namespace) -> int:
                 v1_snapshot.manifest.similarity_metric is not None
                 and v2_snapshot.manifest.similarity_metric is not None
             ),
+            use_ann=use_ann,
         )
     with guarded("analysis:mmd"):
         mmd_metric = compare_mmd(
@@ -631,6 +655,7 @@ def run_compare(args: argparse.Namespace) -> int:
                 v2_summary=v2_summary,
                 comparison_level=comparison_level,
                 sink=sink,
+                use_ann=use_ann,
             )
         for mode_result in retrieval_result.modes:
             label = mode_result.retriever or "retrieval"
@@ -718,6 +743,7 @@ def run_compare(args: argparse.Namespace) -> int:
                     cfg=cfg,
                     v1_summary=v1_summary,
                     v2_summary=v2_summary,
+                    use_ann=use_ann,
                 )
             retrieval_path = diff_dir / "retrieval_cases.parquet"
             write_retrieval_cases_diff(
