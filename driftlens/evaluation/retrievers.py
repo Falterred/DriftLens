@@ -9,6 +9,7 @@ from typing import Literal, Sequence
 
 import numpy as np
 
+from driftlens.analysis.neighbours import score_pair
 from driftlens.config.schema import Bm25Cfg
 from driftlens.schema.record import Record
 from driftlens.text.normalize import normalize_text
@@ -22,13 +23,6 @@ class RankedResult:
     record_id: str
     document_id: str
     score: float
-
-
-def _l2_normalize(vector: np.ndarray) -> np.ndarray:
-    norm = float(np.linalg.norm(vector))
-    if norm == 0.0:
-        return vector
-    return vector / norm
 
 
 def _owning_document_id(record: Record) -> str:
@@ -131,13 +125,7 @@ class DenseProvidedIndex:
         query = np.asarray(query_vector, dtype=np.float64)
         results: list[RankedResult] = []
         for record_id, document_id, vector in self._entries:
-            if self._metric == "cosine":
-                score = float(np.dot(_l2_normalize(query), _l2_normalize(vector)))
-            elif self._metric == "dot":
-                score = float(np.dot(query, vector))
-            else:
-                difference = query - vector
-                score = -float(np.dot(difference, difference))
+            score = score_pair(query, vector, self._metric)
             results.append(
                 RankedResult(record_id=record_id, document_id=document_id, score=score)
             )
