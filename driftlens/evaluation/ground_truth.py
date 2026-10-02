@@ -1,10 +1,12 @@
 """Ground-truth resolution and case classification (Step 40, section 11.4).
 
 Resolution maps a case's v1-side ground-truth ids onto the v2 snapshot.
-At release 0.2 chunk matching does not exist yet (Step 43), so every
-chunk-id item that is not found by direct identity resolves to
-``UNMAPPABLE``; the ``chunk_match_lookup`` hook is accepted so the
-Step 43 matcher can be wired in without changing this module's shape.
+The ``chunk_match_lookup`` hook is now the Step 43 chunk matcher: when it is
+supplied, an unmatched chunk resolves through group-aware matching (a plain
+1:1 similarity match or split/merge group membership becomes ``PRESENT``,
+while a chunk the matcher left unmatched is ``REMOVED``).  When the hook is
+``None`` the release-0.2 behavior is preserved: every chunk id that is not
+found by direct identity resolves to ``UNMAPPABLE``.
 """
 
 from __future__ import annotations
@@ -74,13 +76,15 @@ def resolve_ground_truth_chunk(
     *,
     v1_records_by_id: dict[str, Record],
     v2_record_ids: set[str],
-    chunk_match_lookup: Callable[[str], str | None] | None = None,
+    chunk_match_lookup: Callable[[str], object] | None = None,
 ) -> ResolvedGroundTruth:
     """Resolve one chunk ground-truth id (section 11.4).
 
-    ``chunk_match_lookup`` is the Step 43 chunk-matching hook. It is ``None`
-    for every release-0.2 call site, which makes every non-identity chunk
-    item ``UNMAPPABLE`` regardless of its own identity confidence.
+    ``chunk_match_lookup`` is the Step 43 chunk-matching hook: a group-aware
+    callable returning a match outcome whose ``resolved_id`` is a v2 id for a
+    1:1 similarity match or for split/merge group membership, and ``None``
+    when the chunk was truly removed.  When the hook is ``None`` every
+    non-identity chunk item stays ``UNMAPPABLE``.
     """
 
     if chunk_record_id in v2_record_ids:
@@ -89,12 +93,24 @@ def resolve_ground_truth_chunk(
         )
     if chunk_match_lookup is not None:
         matched = chunk_match_lookup(chunk_record_id)
-        if matched is not None:
-            return ResolvedGroundTruth(chunk_record_id, "chunk", "PRESENT", matched)
+        if isinstance(matched, str):
+            resolved_id: str | None = matched
+        else:
+            resolved_id = getattr(matched, "resolved_id", None)
+        if resolved_id is not None:
+            return ResolvedGroundTruth(
+                chunk_record_id, "chunk", "PRESENT", resolved_id
+            )
+        # The matcher ran and left the chunk unmatched: it ended REMOVED
+        # unless its own identity confidence is too low to assert that.
+        record = v1_records_by_id.get(chunk_record_id)
+        if record is not None and record.identity_confidence in ("HIGH", "MEDIUM"):
+            return ResolvedGroundTruth(chunk_record_id, "chunk", "REMOVED", None)
+        return ResolvedGroundTruth(chunk_record_id, "chunk", "UNMAPPABLE", None)
     record = v1_records_by_id.get(chunk_record_id)
     if record is not None and record.identity_confidence == "LOW":
-        # Reserved for the Step 43 lookup: a low-confidence, unmatched chunk
-        # stays unmappable once chunk matching exists.
+        # With no matcher available a low-confidence, unmatched chunk stays
+        # unmappable rather than removed.
         return ResolvedGroundTruth(chunk_record_id, "chunk", "UNMAPPABLE", None)
     return ResolvedGroundTruth(chunk_record_id, "chunk", "UNMAPPABLE", None)
 
@@ -126,6 +142,7 @@ def resolve_eval_set(
     v1_records_by_id: dict[str, Record],
     v2_records_by_id: dict[str, Record],
     comparison_level: ComparisonLevelResult,
+    chunk_match_lookup: Callable[[str], object] | None = None,
 ) -> list[ResolvedCase]:
     """Resolve every case of an eval set against the v2 snapshot (section 11.4).
 
@@ -140,8 +157,9 @@ def resolve_eval_set(
     }
     v2_document_ids = set(v2_documents.rows)
     v2_record_ids = set(v2_records_by_id)
-    # The comparison level is accepted for the caller contract; v0.2 resolution
-    # is identity-only and the Step 43 chunk matcher will consume it.
+    # The comparison level is accepted for the caller contract; resolution
+    # itself is identity-first and the Step 43 matcher is threaded in via
+    # the optional chunk_match_lookup hook.
     _ = comparison_level
 
     resolved_cases: list[ResolvedCase] = []
@@ -159,7 +177,7 @@ def resolve_eval_set(
                 chunk_id,
                 v1_records_by_id=v1_records_by_id,
                 v2_record_ids=v2_record_ids,
-                chunk_match_lookup=None,
+                chunk_match_lookup=chunk_match_lookup,
             )
             for chunk_id in case.relevant_chunk_ids
             if chunk_id in v1_records_by_id

@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from collections import Counter
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 from driftlens.analysis.compatibility import match_records_by_identity_key
@@ -36,6 +36,8 @@ ChunkStatus = Literal[
     "MODIFIED",
     "ADDED",
     "REMOVED",
+    "SPLIT_PART",
+    "MERGE_PART",
 ]
 
 
@@ -71,6 +73,10 @@ class ChunkDiffResult:
     pairs: list[tuple[Record | None, Record | None, ChunkStatus]]
     unmatched_v1: list[Record]
     unmatched_v2: list[Record]
+    # Step 43 extension point: per-document count of pass-1 (identity/hash)
+    # matches, used to compute the RECHUNKED document flag. Additive and
+    # defaulted so every existing construction site keeps working.
+    pass1_match_counts: dict[str, int] = field(default_factory=dict)
 
 
 def _content_hash(text: str) -> str:
@@ -324,6 +330,7 @@ def classify_chunks(
     pairs: list[tuple[Record | None, Record | None, ChunkStatus]] = []
     unmatched_v1: list[Record] = []
     unmatched_v2: list[Record] = []
+    pass1_match_counts: dict[str, int] = {}
 
     for first, second in matched:
         if _raw_hashes_equal(first, second):
@@ -338,6 +345,10 @@ def classify_chunks(
         else:
             status = "MODIFIED"
         pairs.append((first, second, status))
+        if first.document_id is not None:
+            pass1_match_counts[first.document_id] = (
+                pass1_match_counts.get(first.document_id, 0) + 1
+            )
 
     remaining_v2 = sorted(
         (record for record in v2_filtered if id(record) not in matched_v2),
@@ -355,7 +366,12 @@ def classify_chunks(
         pairs.append((record, None, "REMOVED"))
         unmatched_v1.append(record)
 
-    return ChunkDiffResult(pairs=pairs, unmatched_v1=unmatched_v1, unmatched_v2=unmatched_v2)
+    return ChunkDiffResult(
+        pairs=pairs,
+        unmatched_v1=unmatched_v1,
+        unmatched_v2=unmatched_v2,
+        pass1_match_counts=pass1_match_counts,
+    )
 
 
 def _reconstruct_all(
