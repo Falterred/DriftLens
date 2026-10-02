@@ -472,6 +472,13 @@ def run_compare(args: argparse.Namespace) -> int:
             cfg=cfg.duplicates,
             drift_cfg=cfg.drift,
             seed=cfg.analysis.seed,
+            text_cfg=cfg.text,
+            near_threshold=cfg.analysis.near_duplicate_threshold,
+            semantic_threshold=cfg.analysis.duplicate_threshold,
+            similarity_metric_known=(
+                v1_snapshot.manifest.similarity_metric is not None
+                and v2_snapshot.manifest.similarity_metric is not None
+            ),
         )
     with guarded("analysis:mmd"):
         mmd_metric = compare_mmd(

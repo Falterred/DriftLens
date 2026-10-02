@@ -13,8 +13,8 @@ from driftlens.schema.snapshot import DocumentTable, Snapshot, StatisticsAccumul
 
 
 def _record(record_id, *, text_hash=None, embedding_digest=None):
-    text = "text" if text_hash is not None else None
-    record = Record(record_id=record_id, text=text)
+    text = f"text {text_hash}" if text_hash is not None else None
+    record = Record(record_id=record_id, text=text, normalized_text=text)
     record.normalized_text_hash = text_hash
     if embedding_digest is not None:
         record._embedding_digest_hex = embedding_digest
@@ -169,7 +169,7 @@ def test_compare_duplicates_tests_v2_level_not_change() -> None:
     assert metric.status == "PASS"
 
 
-def test_duplicate_rate_near_semantic_are_na_not_skipped() -> None:
+def test_duplicate_rate_near_semantic_unbaselined_not_skipped() -> None:
     v1_records, v2_records = _rate_fixture()
     _v1, _v2, metrics = compare_duplicates(
         _snapshot(v1_records),
@@ -179,8 +179,11 @@ def test_duplicate_rate_near_semantic_are_na_not_skipped() -> None:
     )
     by_name = {item.name: item for item in metrics}
     for name in ("duplicate_rate_near", "duplicate_rate_semantic"):
-        assert by_name[name].status == "N/A"
+        # Step 37: the stages now run, so the metrics carry real (here zero)
+        # values and are merely unbaselined, no longer N/A.
+        assert by_name[name].status == "UNBASELINED"
         assert by_name[name].reason is None
+        assert by_name[name].v2 == 0.0
 
 
 def test_duplicate_rate_exact_equals_duplicate_rate_at_v01() -> None:
