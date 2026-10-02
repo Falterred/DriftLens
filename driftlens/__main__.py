@@ -30,6 +30,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if command == "compare":
             return run_compare(args)
+        if command == "snapshot":
+            from driftlens.cli.snapshot import run_snapshot
+
+            return run_snapshot(args)
         raise InvalidInputError(
             message=f"the '{command}' command is not available until a later release"
         )

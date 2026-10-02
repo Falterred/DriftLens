@@ -171,8 +171,11 @@ def test_main_version_flag(capsys):
     assert captured.out.strip() == f"driftlens {__version__}"
 
 
-def test_snapshot_subcommand_not_yet_available(capsys):
-    code = main(["snapshot", "x", "--out", "y"])
+def test_snapshot_subcommand_is_available(workdir, capsys):
+    code = main(
+        ["snapshot", str(workdir / "missing.jsonl"), "--out", str(workdir / "out")]
+    )
     captured = capsys.readouterr()
     assert code == 3
-    assert "not available" in captured.err
+    assert "not available" not in captured.err
+    assert "does not exist" in captured.err

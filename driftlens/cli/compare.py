@@ -162,9 +162,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     compare.add_argument("--max-workers", dest="limits.max_workers")
     compare.add_argument("--max-input-bytes", dest="limits.max_input_bytes", type=int)
 
-    snapshot = subparsers.add_parser("snapshot", help="snapshot management")
-    snapshot.add_argument("input", nargs="?")
-    snapshot.add_argument("--out")
+    from driftlens.cli.snapshot import build_arg_parser_snapshot_subcommand
+
+    build_arg_parser_snapshot_subcommand(subparsers)
 
     baseline = subparsers.add_parser("baseline", help="baseline management")
     baseline.add_argument("input", nargs="?")
@@ -233,6 +233,7 @@ def _load_input(
     *,
     limits: RuntimeLimits,
     allow_unsafe_pickle: bool,
+    verify_full: bool = False,
 ) -> tuple[LoadedInput, bool]:
     if format_ == "jsonl":
         return load_jsonl(path, side=side, limits=limits), False
@@ -254,12 +255,9 @@ def _load_input(
     if format_ == "chroma":
         return load_chroma(path, side=side, limits=limits), False
     if format_ == "snapshot":
-        raise UnsupportedFormatError(
-            message=(
-                "snapshot directories as input require the snapshot command "
-                "(release 0.2)"
-            )
-        )
+        from driftlens.adapters.snapshot import load_snapshot_as_input
+
+        return load_snapshot_as_input(path, limits=limits, verify_full=verify_full), False
     raise UnsupportedFormatError(message=f"unsupported format {format_!r}")
 
 
@@ -363,16 +361,21 @@ def run_compare(args: argparse.Namespace) -> int:
     check_dependencies(format_a, format_b, clusters_mode=clusters_mode)
 
     # Stage 4 - load and validation (sequential; one side fully completes first).
+    # A written snapshot directory already carries a Snapshot; it is passed
+    # through unchanged instead of rebuilding identity.
     loaded_a, unsafe_a = _load_input(
         format_a,
         Path(args.input_a),
         side_a,
         limits=limits,
         allow_unsafe_pickle=getattr(args, "allow_unsafe_pickle", False),
+        verify_full=getattr(args, "verify_full", False),
     )
-    v1_snapshot = _build_side(
-        loaded_a, side_a, cfg=cfg, sink=sink, limits=limits, unsafe_pickle=unsafe_a
-    )
+    v1_snapshot = getattr(loaded_a, "_prebuilt_snapshot", None)
+    if v1_snapshot is None:
+        v1_snapshot = _build_side(
+            loaded_a, side_a, cfg=cfg, sink=sink, limits=limits, unsafe_pickle=unsafe_a
+        )
 
     loaded_b, unsafe_b = _load_input(
         format_b,
@@ -380,10 +383,13 @@ def run_compare(args: argparse.Namespace) -> int:
         side_b,
         limits=limits,
         allow_unsafe_pickle=getattr(args, "allow_unsafe_pickle", False),
+        verify_full=getattr(args, "verify_full", False),
     )
-    v2_snapshot = _build_side(
-        loaded_b, side_b, cfg=cfg, sink=sink, limits=limits, unsafe_pickle=unsafe_b
-    )
+    v2_snapshot = getattr(loaded_b, "_prebuilt_snapshot", None)
+    if v2_snapshot is None:
+        v2_snapshot = _build_side(
+            loaded_b, side_b, cfg=cfg, sink=sink, limits=limits, unsafe_pickle=unsafe_b
+        )
 
     expect_a = getattr(args, "expect_a", None)
     if expect_a and expect_a != v1_snapshot.manifest.snapshot_id:

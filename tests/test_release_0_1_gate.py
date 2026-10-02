@@ -59,7 +59,17 @@ RELEASE_0_1_MODULES = [
     "driftlens.__main__",
 ]
 
-SUPPORTING_MODULES = frozenset({"driftlens", "driftlens.adapters._embedding_codec"})
+# Modules the v0.1 surface imports directly but that are not part of the
+# frozen v0.1 public module list, plus the release 0.2 snapshot modules the CLI
+# dispatches to (Step 36) so the scope scan below allows them.
+SUPPORTING_MODULES = frozenset(
+    {
+        "driftlens",
+        "driftlens.adapters._embedding_codec",
+        "driftlens.adapters.snapshot",
+        "driftlens.cli.snapshot",
+    }
+)
 
 # Codes that only later releases can produce, with the reason they are excluded.
 V03_PLUS_ONLY_CODES = {

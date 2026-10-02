@@ -33,6 +33,9 @@ Thumbs.db
 # Documents
 docs/
 
+#Manual Tests
+manual-tests/
+
 # Generated test data
 tests/_chroma_tmp/
 tests/_parquet_tmp/
