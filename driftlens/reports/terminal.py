@@ -8,6 +8,8 @@ from driftlens.analysis.health import (
     Metric,
     MetricStatus,
 )
+from driftlens.cli.ci import compute_ci_exit_code
+from driftlens.config.schema import DIMENSIONS, CiCfg
 from driftlens.errors import DiagnosticSink
 from driftlens.reports.json import cap_category_labels
 from driftlens.schema.manifest import Manifest
@@ -210,7 +212,7 @@ def render_terminal_report(
     return "\n".join(lines)
 
 
-def _key_change_suffix(dimension: Dimension) -> str:
+def _dimension_key_change_summary(dimension: Dimension) -> str:
     metric = next(
         (
             item
@@ -245,17 +247,35 @@ def render_quiet_report(health: HealthReport) -> str:
             continue
         lines.append(
             f"{dimension.name.upper()} {dimension.status}"
-            f"{_key_change_suffix(dimension)}"
+            f"{_dimension_key_change_summary(dimension)}"
         )
     return "\n".join(lines)
 
 
-def render_ci_report(health: HealthReport) -> tuple[str, int]:
-    """One line per fixed dimension plus the v0.1 exit-code stub."""
+def render_ci_lines(health: HealthReport, *, cfg: CiCfg) -> list[str]:
+    """One line per fixed dimension, in the canonical DIMENSIONS order."""
     lines: list[str] = []
-    for dimension in health.dimensions.values():
+    for dim_name in DIMENSIONS:
+        dimension = health.dimensions[dim_name]
         line = f"{dimension.name.upper()} {dimension.status}"
         if dimension.status in ("WARN", "FAIL"):
-            line += _key_change_suffix(dimension)
+            line += _dimension_key_change_summary(dimension)
+        elif dimension.status == "SKIPPED":
+            reason = next(
+                (
+                    metric.reason
+                    for metric in dimension.metrics
+                    if metric.status == "SKIPPED"
+                ),
+                None,
+            )
+            line += f" ({reason})"
         lines.append(line)
-    return "\n".join(lines), 0
+    return lines
+
+
+def render_ci_report(health: HealthReport, *, cfg: CiCfg) -> tuple[str, int]:
+    """The seven CI lines followed by the computed process exit code."""
+    lines = render_ci_lines(health, cfg=cfg)
+    code = compute_ci_exit_code(health, cfg=cfg)
+    return "\n".join(lines) + f"\nExit code: {code}", code

@@ -188,8 +188,8 @@ def test_quiet_report_only_non_pass_dimensions() -> None:
 
 def test_ci_report_seven_lines() -> None:
     health = build_health_report({}, cfg=default_config())
-    text, exit_code = render_ci_report(health)
-    assert text.count("\n") == 6
+    text, exit_code = render_ci_report(health, cfg=default_config().ci)
+    assert text.count("\n") == 7
     assert exit_code == 0
 
 

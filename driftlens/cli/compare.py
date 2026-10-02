@@ -733,11 +733,10 @@ def run_compare(args: argparse.Namespace) -> int:
             diff_artifact_paths["breakdown_" + field] = str(breakdown_path)
 
     # Stage 7 - report rendering.
-    exit_code_ci = 0
     if diagnostic_active and not getattr(args, "ci", False):
         print("DIAGNOSTIC MODE: document text excerpts are included in --diff-out")
     if getattr(args, "ci", False):
-        text, exit_code_ci = render_ci_report(health)
+        text, exit_code_ci = render_ci_report(health, cfg=cfg.ci)
     elif getattr(args, "quiet", False):
         text = render_quiet_report(health)
     else:
