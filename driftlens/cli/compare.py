@@ -29,7 +29,7 @@ from driftlens.analysis.content import (
 )
 from driftlens.analysis.duplicates import compare_duplicates
 from driftlens.analysis.embeddings import analyze_embeddings
-from driftlens.analysis.health import build_health_report
+from driftlens.analysis.health import Metric, build_health_report
 from driftlens.analysis.metadata import compare_metadata
 from driftlens.analysis.mmd import compare_mmd
 from driftlens.config.loader import effective_side_options, load_config
@@ -43,10 +43,24 @@ from driftlens.errors import (
     UnsupportedFormatError,
     guarded,
 )
+from driftlens.evaluation.ground_truth import ResolvedCase, resolve_eval_set
+from driftlens.evaluation.metrics import first_relevant_rank
+from driftlens.evaluation.retrieval import run_retrieval_comparison
+from driftlens.evaluation.retrievers import BM25Index, DenseProvidedIndex
 from driftlens.identity.snapshot_id import (
     EmbeddingDescriptor,
     build_descriptor,
     compute_snapshot_id,
+)
+from driftlens.reports.diff_export import (
+    BreakdownRow,
+    compute_breakdown,
+    top_n_changed_documents,
+    write_breakdown,
+    write_chunks_diff,
+    write_documents_diff,
+    write_duplicates_diff,
+    write_retrieval_cases_diff,
 )
 from driftlens.reports.json import (
     BorderlineCounter,
@@ -58,23 +72,18 @@ from driftlens.reports.terminal import (
     render_quiet_report,
     render_terminal_report,
 )
+from driftlens.schema.eval_set import load_eval_set
 from driftlens.schema.manifest import (
     SNAPSHOT_SCHEMA_VERSION,
     FieldMappingSummary,
 )
 from driftlens.schema.snapshot import Snapshot, build_snapshot
 from driftlens.security.limits import RuntimeLimits
+from driftlens.security.redaction import apply_redaction_to_metric
 from driftlens.text.normalize import normalization_version
 from driftlens.text.tokenizer import tokenizer_id
 
-_UNIMPLEMENTED_FLAGS = (
-    "eval_set",
-    "baseline",
-    "diff_out",
-    "breakdown_by",
-    "redact_ids",
-    "diagnostic",
-)
+_UNIMPLEMENTED_FLAGS = ("baseline",)
 
 _SIDE_OPTION_FLAGS = (
     "id_field",
@@ -117,11 +126,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     compare.add_argument("--json-out", dest="json_out")
     compare.add_argument("--report-out", dest="report_out")
     compare.add_argument("--diff-out", dest="diff_out")
-    compare.add_argument("--breakdown-by", dest="breakdown_by")
+    compare.add_argument("--breakdown-by", dest="breakdown_by", action="append")
     compare.add_argument("--eval-set", dest="eval_set")
     compare.add_argument("--baseline", dest="baseline")
     compare.add_argument("--redact-ids", dest="redact_ids", action="store_true")
     compare.add_argument("--diagnostic", dest="diagnostic", action="store_true")
+    compare.add_argument("--top-n", dest="privacy.top_n", type=int)
     compare.add_argument(
         "--force-cross-model", dest="force_cross_model", action="store_true"
     )
@@ -318,6 +328,93 @@ def _reject_unimplemented(args: argparse.Namespace) -> None:
             )
 
 
+def _text_by_document(snapshot: Snapshot) -> dict[str, str]:
+    """First non-empty text per document, for --diagnostic excerpts."""
+    texts: dict[str, str] = {}
+    for record in snapshot.records:
+        text = record.text if record.text is not None else record.normalized_text
+        if text is None:
+            continue
+        texts.setdefault(record.document_id, text)
+    return texts
+
+
+def _lexical_runnable(snapshot: Snapshot) -> bool:
+    return any(
+        record.text is not None or record.normalized_text is not None
+        for record in snapshot.records
+    )
+
+
+def _safe_field(field: str) -> str:
+    return "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in field)
+
+
+def _breakdown_to_json(row: BreakdownRow) -> dict[str, Any]:
+    return {
+        "segment_value": row.segment_value,
+        "is_other": row.is_other,
+        "document_count": row.document_count,
+        "status_counts": dict(row.status_counts),
+        "chunk_profile": row.chunk_profile,
+        "mmd": row.mmd,
+    }
+
+
+def _retrieval_rank_maps(
+    mode: str,
+    v1: Snapshot,
+    v2: Snapshot,
+    resolved_cases: list[ResolvedCase],
+    *,
+    cfg: Config,
+    v1_summary: Any,
+    v2_summary: Any,
+) -> tuple[dict[str, int | None], dict[str, int | None]]:
+    """First-relevant chunk rank per case for the exported retrieval diff.
+
+    ResolvedCase carries no ranks and run_retrieval_comparison does not return
+    them, so the CLI recomputes the primary mode's ranking here for the
+    --diff-out artifact only.
+    """
+    if mode == "lexical":
+        index_v1 = BM25Index(
+            v1.records, cfg=cfg.retrieval.bm25, casefold=cfg.text.casefold
+        )
+        index_v2 = BM25Index(
+            v2.records, cfg=cfg.retrieval.bm25, casefold=cfg.text.casefold
+        )
+    elif mode == "dense":
+        index_v1 = DenseProvidedIndex(v1.records, metric=v1_summary.similarity_metric)
+        index_v2 = DenseProvidedIndex(v2.records, metric=v2_summary.similarity_metric)
+    else:
+        return {}, {}
+    kmax = max(cfg.retrieval.k)
+    rank_v1: dict[str, int | None] = {}
+    rank_v2: dict[str, int | None] = {}
+    for case in resolved_cases:
+        if case.state not in ("VALID", "PARTIAL"):
+            continue
+        if mode == "lexical":
+            query_v1 = query_v2 = case.case.query
+        else:
+            embeddings = case.case.query_embeddings
+            if embeddings is None or embeddings.v1 is None or embeddings.v2 is None:
+                continue
+            query_v1, query_v2 = embeddings.v1, embeddings.v2
+        rank_v1[case.case.query_id] = first_relevant_rank(
+            index_v1.search(query_v1, top_k=kmax),
+            case.present_document_ids,
+            kmax,
+        )
+        rank_v2[case.case.query_id] = first_relevant_rank(
+            index_v2.search(query_v2, top_k=kmax),
+            case.present_document_ids,
+            kmax,
+        )
+    return rank_v1, rank_v2
+
+
 def run_compare(args: argparse.Namespace) -> int:
     """Run the full compare pipeline and return the process exit code."""
     # Stage 0 - early flag validation.
@@ -491,6 +588,44 @@ def run_compare(args: argparse.Namespace) -> int:
             sink=sink,
         )
 
+    eval_set = None
+    resolved_cases: list[ResolvedCase] = []
+    retrieval_modes: list[str] = []
+    retrieval_metrics: list[Metric] = []
+    if getattr(args, "eval_set", None):
+        eval_set = load_eval_set(Path(args.eval_set), limits=limits)
+        with guarded("analysis:retrieval"):
+            retrieval_result = run_retrieval_comparison(
+                v1_snapshot,
+                v2_snapshot,
+                eval_set,
+                cfg=cfg,
+                compat=compat,
+                v1_summary=v1_summary,
+                v2_summary=v2_summary,
+                comparison_level=comparison_level,
+                sink=sink,
+            )
+        for mode_result in retrieval_result.modes:
+            label = mode_result.retriever or "retrieval"
+            if mode_result.retriever is not None:
+                retrieval_modes.append(mode_result.retriever)
+            for name, metric in mode_result.metrics.items():
+                metric.name = f"{label}:{name}"
+                retrieval_metrics.append(metric)
+        resolved_cases = resolve_eval_set(
+            eval_set,
+            v1_documents=v1_snapshot.documents,
+            v2_documents=v2_snapshot.documents,
+            v1_records_by_id={
+                record.record_id: record for record in v1_snapshot.records
+            },
+            v2_records_by_id={
+                record.record_id: record for record in v2_snapshot.records
+            },
+            comparison_level=comparison_level,
+        )
+
     dimensions = {
         "content": content_metrics,
         "chunking": chunking_metrics,
@@ -498,12 +633,83 @@ def run_compare(args: argparse.Namespace) -> int:
         "embedding": [mmd_metric],
         "semantic": [],
         "duplication": duplication_metrics,
-        "retrieval": [],
+        "retrieval": retrieval_metrics,
     }
     health = build_health_report(dimensions, cfg=cfg)
 
+    if getattr(args, "redact_ids", False):
+        redaction_key = v2_snapshot.manifest.snapshot_id
+        for dimension in health.dimensions.values():
+            dimension.metrics = [
+                apply_redaction_to_metric(
+                    metric, snapshot_id=redaction_key, redact=True
+                )
+                for metric in dimension.metrics
+            ]
+
+    breakdown_rows: dict[str, list[BreakdownRow]] = {
+        field: compute_breakdown(
+            field,
+            v1=v1_snapshot,
+            v2=v2_snapshot,
+            document_diff=_document_rows,
+            cfg=cfg,
+        )
+        for field in (getattr(args, "breakdown_by", None) or [])
+    }
+
+    top_changed = top_n_changed_documents(_document_rows, n=cfg.privacy.top_n)
+
+    diagnostic_active = bool(getattr(args, "diagnostic", False))
+    diff_artifact_paths: dict[str, str] = {}
+    if getattr(args, "diff_out", None):
+        diff_dir = Path(args.diff_out)
+        documents_path = diff_dir / "documents.parquet"
+        chunks_path = diff_dir / "chunks.parquet"
+        write_documents_diff(
+            _document_rows,
+            path=documents_path,
+            diagnostic=diagnostic_active,
+            v1_text_by_doc=_text_by_document(v1_snapshot),
+            v2_text_by_doc=_text_by_document(v2_snapshot),
+        )
+        write_chunks_diff(chunk_result, path=chunks_path, diagnostic=diagnostic_active)
+        diff_artifact_paths["documents"] = str(documents_path)
+        diff_artifact_paths["chunks"] = str(chunks_path)
+        write_duplicates_diff(_dups_v1, path=diff_dir, side="v1")
+        write_duplicates_diff(_dups_v2, path=diff_dir, side="v2")
+        diff_artifact_paths["duplicates_v1"] = str(diff_dir / "duplicates_v1.parquet")
+        diff_artifact_paths["duplicates_v2"] = str(diff_dir / "duplicates_v2.parquet")
+        if eval_set is not None:
+            rank_v1: dict[str, int | None] = {}
+            rank_v2: dict[str, int | None] = {}
+            if retrieval_modes:
+                rank_v1, rank_v2 = _retrieval_rank_maps(
+                    retrieval_modes[0],
+                    v1_snapshot,
+                    v2_snapshot,
+                    resolved_cases,
+                    cfg=cfg,
+                    v1_summary=v1_summary,
+                    v2_summary=v2_summary,
+                )
+            retrieval_path = diff_dir / "retrieval_cases.parquet"
+            write_retrieval_cases_diff(
+                resolved_cases,
+                path=retrieval_path,
+                rank_v1=rank_v1,
+                rank_v2=rank_v2,
+            )
+            diff_artifact_paths["retrieval_cases"] = str(retrieval_path)
+        for field, rows in breakdown_rows.items():
+            breakdown_path = diff_dir / ("breakdown_" + _safe_field(field) + ".parquet")
+            write_breakdown(rows, path=breakdown_path)
+            diff_artifact_paths["breakdown_" + field] = str(breakdown_path)
+
     # Stage 7 - report rendering.
     exit_code_ci = 0
+    if diagnostic_active and not getattr(args, "ci", False):
+        print("DIAGNOSTIC MODE: document text excerpts are included in --diff-out")
     if getattr(args, "ci", False):
         text, exit_code_ci = render_ci_report(health)
     elif getattr(args, "quiet", False):
@@ -517,10 +723,15 @@ def run_compare(args: argparse.Namespace) -> int:
             determinism_level="TOLERANCE",
             isatty=sys.stdout.isatty(),
             seed=cfg.analysis.seed,
+            top_changed=top_changed,
         )
     print(text)
 
     if getattr(args, "json_out", None):
+        breakdowns_json = {
+            field: [_breakdown_to_json(row) for row in rows]
+            for field, rows in breakdown_rows.items()
+        }
         report = build_report_json(
             health=health,
             v1_manifest=v1_snapshot.manifest,
@@ -528,8 +739,9 @@ def run_compare(args: argparse.Namespace) -> int:
             sink=sink,
             cfg=cfg,
             borderline=borderline,
-            diff_artifact_paths={},
+            diff_artifact_paths=diff_artifact_paths,
             driftlens_version=__version__,
+            breakdowns=breakdowns_json or None,
         )
         write_report_json(report, Path(args.json_out))
 

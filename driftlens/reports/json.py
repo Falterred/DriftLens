@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from driftlens.analysis.health import Dimension, HealthReport, Metric
-from driftlens.config.schema import Config
+from driftlens.config.schema import PRIVACY_MAX_LABEL_CATEGORIES, Config
 from driftlens.errors import DiagnosticSink
 from driftlens.schema.manifest import Manifest
 
@@ -37,6 +37,21 @@ def _sanitize(value):
     return value
 
 
+def cap_category_labels(labels: dict[str, int]) -> tuple[dict[str, int], bool]:
+    """Keep at most PRIVACY_MAX_LABEL_CATEGORIES labels, highest count first.
+
+    Returns the retained mapping and whether anything was dropped.  This is the
+    display-time cap; it is deliberately independent of the analysis-time
+    metadata max_categories setting, which only decides whether a field is
+    collected in the first place.
+    """
+
+    if len(labels) <= PRIVACY_MAX_LABEL_CATEGORIES:
+        return dict(labels), False
+    ordered = sorted(labels.items(), key=lambda item: (-item[1], item[0]))
+    return dict(ordered[:PRIVACY_MAX_LABEL_CATEGORIES]), True
+
+
 def sample_to_json(sample) -> dict | None:
     """Render a SampleInfo as its nested n/of shape, or None."""
     if sample is None:
@@ -54,6 +69,15 @@ def metric_to_json(metric: Metric) -> dict:
     for value in (metric.v1, metric.v2, metric.change):
         if value is not None and _sanitize(value) is None and reason is None:
             reason = "NON_FINITE_VALUE"
+    details = metric.details
+    if isinstance(details, dict):
+        raw_labels = details.get("category_labels")
+        if isinstance(raw_labels, dict):
+            capped, truncated = cap_category_labels(raw_labels)
+            details = dict(details)
+            details["category_labels"] = capped
+            if truncated:
+                details["category_labels_truncated"] = True
     return {
         "v1": _sanitize(metric.v1),
         "v2": _sanitize(metric.v2),
@@ -61,7 +85,7 @@ def metric_to_json(metric: Metric) -> dict:
         "status": metric.status,
         "reason": reason,
         "sample": sample_to_json(metric.sample),
-        "details": metric.details,
+        "details": details,
     }
 
 
@@ -130,9 +154,10 @@ def build_report_json(
     borderline: BorderlineCounter,
     diff_artifact_paths: dict[str, str],
     driftlens_version: str,
+    breakdowns: dict[str, list[dict]] | None = None,
 ) -> dict:
     """Build the full section 15.7 report object."""
-    return {
+    report = {
         "report_schema_version": REPORT_SCHEMA_VERSION,
         "driftlens_version": driftlens_version,
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -162,6 +187,9 @@ def build_report_json(
         },
         "diff_artifacts": diff_artifact_paths,
     }
+    if breakdowns is not None:
+        report["breakdowns"] = breakdowns
+    return report
 
 
 def write_report_json(report: dict, path: Path) -> None:

@@ -61,6 +61,8 @@ class Metric:
     details: dict[str, Any] | None = None
     is_threshold_key: bool = False
     approximate: bool = False
+    is_identifier_valued: bool = False
+    identifier_kind: Literal["id", "label"] = "id"
 
 
 @dataclass
@@ -120,6 +122,8 @@ def make_metric(
     approximate: bool = False,
     is_threshold_key: bool | None = None,
     borderline: Any | None = None,
+    is_identifier_valued: bool = False,
+    identifier_kind: Literal["id", "label"] = "id",
 ) -> Metric:
     """Thin constructor deriving is_threshold_key and the status tag."""
     threshold_key = name in THRESHOLD_KEYS if is_threshold_key is None else is_threshold_key
@@ -144,6 +148,8 @@ def make_metric(
         details=details,
         is_threshold_key=threshold_key,
         approximate=approximate,
+        is_identifier_valued=is_identifier_valued,
+        identifier_kind=identifier_kind,
     )
 
 

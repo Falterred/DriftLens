@@ -48,13 +48,27 @@ def hit_rate_at_k(
     return 1.0 if set(document_ranked[:k]) & relevant_document_ids else 0.0
 
 
+def first_relevant_rank(
+    chunk_ranked: Sequence[RankedResult], relevant_document_ids: set[str], kmax: int
+) -> int | None:
+    """Return the raw 1-based chunk rank of the first relevant document.
+
+    The rank is the position in the chunk-level ranking (not the deduplicated
+    document ranking), matching the MRR definition.  None means no relevant
+    document appears within kmax.
+    """
+
+    for rank, result in enumerate(chunk_ranked[:kmax], start=1):
+        if result.document_id in relevant_document_ids:
+            return rank
+    return None
+
+
 def mrr_at_kmax(
     chunk_ranked: Sequence[RankedResult], relevant_document_ids: set[str], kmax: int
 ) -> float:
-    for rank, result in enumerate(chunk_ranked[:kmax], start=1):
-        if result.document_id in relevant_document_ids:
-            return 1.0 / rank
-    return 0.0
+    rank = first_relevant_rank(chunk_ranked, relevant_document_ids, kmax)
+    return 1.0 / rank if rank is not None else 0.0
 
 
 def chunk_recall_at_k(

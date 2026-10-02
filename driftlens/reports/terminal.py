@@ -9,6 +9,7 @@ from driftlens.analysis.health import (
     MetricStatus,
 )
 from driftlens.errors import DiagnosticSink
+from driftlens.reports.json import cap_category_labels
 from driftlens.schema.manifest import Manifest
 
 NAME_WIDTH = 28
@@ -102,6 +103,27 @@ def format_dimension_block(dimension: Dimension, *, isatty: bool) -> str:
     return "\n".join(lines)
 
 
+def format_category_labels(metric: Metric) -> list[str]:
+    """Category-label rows for one metric, hard-capped for display.
+
+    Every report surface outside --breakdown-by enforces
+    PRIVACY_MAX_LABEL_CATEGORIES; this helper is the single place that renders
+    them, so the cap cannot be forgotten at a call site.
+    """
+
+    details = metric.details
+    if not isinstance(details, dict):
+        return []
+    labels = details.get("category_labels")
+    if not isinstance(labels, dict) or not labels:
+        return []
+    capped, truncated = cap_category_labels(labels)
+    rows = [f"  {value} ({count})" for value, count in capped.items()]
+    if truncated:
+        rows.append(f"  +{len(labels) - len(capped)} more")
+    return rows
+
+
 def format_status_line(health: HealthReport) -> str:
     """The overall STATUS line."""
     if health.overall == "UNBASELINED":
@@ -157,6 +179,7 @@ def render_terminal_report(
     seed: int,
     report_out: str | None = None,
     diff_out: str | None = None,
+    top_changed: list[str] | None = None,
 ) -> str:
     """Full section 15.2 report, in the fixed order."""
     lines = [
@@ -168,6 +191,8 @@ def render_terminal_report(
         if dimension.status == "N/A" and len(dimension.metrics) == 0:
             continue
         lines.append(format_dimension_block(dimension, isatty=isatty))
+        if dimension.name == "content" and top_changed:
+            lines.append("  top-N changed documents: " + ", ".join(top_changed))
         lines.append("")
     if sink.items():
         lines.append(format_warnings_block(sink))
