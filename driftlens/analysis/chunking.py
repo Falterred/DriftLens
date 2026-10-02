@@ -255,8 +255,22 @@ def _count_metric(name: str, v1_count: int, v2_count: int, *, approximate: bool 
     )
 
 
-def compare_chunking(v1: Snapshot, v2: Snapshot, *, cfg: Config) -> list[Metric]:
-    """Build the CHUNKING dimension's metric list."""
+@dataclass
+class ChunkingComparisonResult:
+    """Chunking metrics plus the profiles and anomaly counts they were built from."""
+
+    metrics: list[Metric]
+    profile_v1: ChunkProfile
+    profile_v2: ChunkProfile
+    anomaly_v1: AnomalyCounts
+    anomaly_v2: AnomalyCounts
+
+    def __iter__(self):
+        return iter(self.metrics)
+
+
+def compare_chunking(v1: Snapshot, v2: Snapshot, *, cfg: Config) -> ChunkingComparisonResult:
+    """Build the CHUNKING dimension's metric list and its source profiles."""
     v1_profile = compute_chunk_profile(
         v1.records, v1.documents, seed=cfg.analysis.seed
     )
@@ -368,4 +382,10 @@ def compare_chunking(v1: Snapshot, v2: Snapshot, *, cfg: Config) -> list[Metric]
                 )
             )
 
-    return metrics
+    return ChunkingComparisonResult(
+        metrics=metrics,
+        profile_v1=v1_profile,
+        profile_v2=v2_profile,
+        anomaly_v1=v1_anomalies,
+        anomaly_v2=v2_anomalies,
+    )

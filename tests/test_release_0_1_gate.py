@@ -73,6 +73,7 @@ SUPPORTING_MODULES = frozenset(
         "driftlens.evaluation.retrieval",
         "driftlens.evaluation.retrievers",
         "driftlens.reports.diff_export",
+        "driftlens.reports.html",
         "driftlens.schema.eval_set",
         "driftlens.security.redaction",
     }

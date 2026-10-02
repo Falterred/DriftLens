@@ -130,12 +130,12 @@ def test_json_out_written(workdir):
     assert payload["report_schema_version"] == "1.0"
 
 
-def test_report_out_rejected_at_v01(workdir):
+def test_report_out_written(workdir):
     first, second = _valid_pair(workdir)
     out = workdir / "out.html"
-    with pytest.raises(InvalidInputError) as info:
-        _run(["compare", str(first), str(second), "--report-out", str(out)])
-    assert "release 0.2" in str(info.value)
+    code = _run(["compare", str(first), str(second), "--report-out", str(out)])
+    assert code == 0
+    assert out.read_text(encoding="utf-8").startswith("<!DOCTYPE html>")
 
 
 def test_verify_full_noop_always_passes_at_v01(workdir):

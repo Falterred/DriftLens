@@ -542,7 +542,8 @@ def run_compare(args: argparse.Namespace) -> int:
             v1_snapshot, v2_snapshot, cfg=cfg, sink=sink
         )
     with guarded("analysis:chunking"):
-        chunking_metrics = compare_chunking(v1_snapshot, v2_snapshot, cfg=cfg)
+        chunking_res = compare_chunking(v1_snapshot, v2_snapshot, cfg=cfg)
+    chunking_metrics = list(chunking_res)
 
     common_record_ids = {
         first.record_id
@@ -746,8 +747,50 @@ def run_compare(args: argparse.Namespace) -> int:
         write_report_json(report, Path(args.json_out))
 
     if getattr(args, "report_out", None):
-        raise InvalidInputError(
-            message="--report-out (HTML report) is not available until release 0.2"
+        from driftlens.reports.html import render_html_report, write_html_report
+        from driftlens.reports.json import _determinism_level
+
+        tier = {
+            "REPLACED": 4,
+            "MODIFIED": 3,
+            "ADDED": 2,
+            "REMOVED": 2,
+            "FORMAT_ONLY_CHANGE": 1,
+            "UNCHANGED": 0,
+        }
+        changed_docs = [row for row in _document_rows if row.status != "UNCHANGED"]
+        changed_docs.sort(key=lambda row: (-tier.get(row.status, 0), row.document_id))
+        top_ids = [row.document_id for row in changed_docs[: cfg.privacy.top_n]]
+        unsafe_pickle_active = bool(
+            v1_snapshot.manifest.unsafe_pickle or v2_snapshot.manifest.unsafe_pickle
         )
+        html_content = render_html_report(
+            health=health,
+            v1_manifest=v1_snapshot.manifest,
+            v2_manifest=v2_snapshot.manifest,
+            document_diff=_document_rows,
+            chunk_diff=chunk_result,
+            field_drifts=_field_drifts,
+            profile_v1=chunking_res.profile_v1,
+            profile_v2=chunking_res.profile_v2,
+            anomaly_v1=chunking_res.anomaly_v1,
+            anomaly_v2=chunking_res.anomaly_v2,
+            compat=compat,
+            v1_summary=v1_summary,
+            v2_summary=v2_summary,
+            mmd_metric=mmd_metric,
+            dup_v1=_dups_v1,
+            dup_v2=_dups_v2,
+            cfg=cfg,
+            sink=sink,
+            determinism_level=_determinism_level(health),
+            borderline=borderline.count,
+            limits_applied=v2_snapshot.manifest.limits_applied,
+            unsafe_pickle=unsafe_pickle_active,
+            top_n_ids=top_ids,
+            diagnostic=diagnostic_active,
+            breakdowns=breakdown_rows or None,
+        )
+        write_html_report(html_content, Path(args.report_out))
 
     return 0 if not getattr(args, "ci", False) else exit_code_ci
