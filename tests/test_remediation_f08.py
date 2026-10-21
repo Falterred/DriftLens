@@ -30,15 +30,48 @@ def _workdir(name: str) -> Path:
     return path
 
 
+def _write_corpus(workdir: Path):
+    """Self-contained corpus (mirrors the audit's A/C pair) so the tests
+    run on a fresh checkout without the local-only audit-artifacts dir."""
+    baseline = [
+        {"id": "s1", "text": "alpha beta gamma delta epsilon", "score": 5},
+        {"id": "s2", "text": "zeta eta theta iota kappa", "score": 4},
+        {"id": "s3", "text": "lambda mu nu xi omicron", "score": 3},
+        {"id": "s4", "text": "pi rho sigma tau upsilon", "score": 2},
+        {"id": "s5", "text": "phi chi psi omega alpha beta", "score": 1},
+        {"id": "s6", "text": "gamma delta epsilon zeta eta", "score": 6},
+    ]
+    modified = [
+        {"id": "s1", "text": "alpha beta gamma delta epsilon", "score": 5},
+        # s2: small edit -> MODIFIED; s3: unrelated text -> REPLACED
+        {"id": "s2", "text": "zeta eta theta iota kappa lambda", "score": 4},
+        {"id": "s3", "text": "completely different unrelated content here", "score": 3},
+        {"id": "s4", "text": "pi rho sigma tau upsilon", "score": 2},
+        {"id": "s5", "text": "phi chi psi omega alpha beta", "score": 1},
+        {"id": "s6", "text": "gamma delta epsilon zeta eta", "score": 6},
+    ]
+    first = workdir / "baseline.jsonl"
+    second = workdir / "modified.jsonl"
+    first.write_text(
+        "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in baseline),
+        encoding="utf-8",
+    )
+    second.write_text(
+        "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in modified),
+        encoding="utf-8",
+    )
+    return first, second
+
+
 def _run_compare(workdir: Path, *extra: str) -> subprocess.CompletedProcess:
-    data = Path("audit-artifacts/manual-test-corpus/data")
+    first, second = _write_corpus(workdir)
     argv = [
         sys.executable,
         "-m",
         "driftlens",
         "compare",
-        str(data / "A-baseline.jsonl"),
-        str(data / "C-modified.jsonl"),
+        str(first),
+        str(second),
         "--redact-ids",
         *extra,
     ]
@@ -117,8 +150,8 @@ def test_redaction_does_not_break_classification() -> None:
         assert result.returncode == 0, result.stderr
         report = json.loads(json_path.read_text(encoding="utf-8"))
         metrics = report["dimensions"]["content"]["metrics"]
-        # Same corpus as the audit: 1 modified + 1 replaced must survive
-        # redaction with the correct counts.
+        # Same shape as the audit corpus: 1 modified + 1 replaced must
+        # survive redaction with the correct counts.
         assert metrics["documents_modified"]["change"] == 1
         assert metrics["documents_replaced"]["change"] == 1
         assert metrics["documents_added"]["change"] == 0
@@ -130,14 +163,14 @@ def test_redaction_does_not_break_classification() -> None:
 def test_unredacted_run_still_shows_raw_ids() -> None:
     workdir = _workdir("unredacted")
     try:
-        data = Path("audit-artifacts/manual-test-corpus/data")
+        first, second = _write_corpus(workdir)
         argv = [
             sys.executable,
             "-m",
             "driftlens",
             "compare",
-            str(data / "A-baseline.jsonl"),
-            str(data / "C-modified.jsonl"),
+            str(first),
+            str(second),
         ]
         result = subprocess.run(
             argv, capture_output=True, text=True, timeout=120, cwd=str(ROOT)
