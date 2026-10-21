@@ -25,7 +25,6 @@ from driftlens.identity.documents import (
     Granularity,
     GranularitySource,
     assign_identity,
-    disambiguate_duplicate_ids,
 )
 from driftlens.identity.hashing import DTYPE_TAGS, canonical_json, sha256_hex
 from driftlens.identity.snapshot_id import (
@@ -207,6 +206,7 @@ def build_snapshot(
         side=side,
         sink=sink,
         granularity_override=granularity_override,
+        on_duplicate_id=cfg.identity.on_duplicate_id,
     )
 
     embedding_dimension = _check_dimension_uniformity(records)
@@ -243,6 +243,9 @@ def build_snapshot(
 
     metadata_confidence = _embedding_metadata_confidence(embedding_records)
 
+    # chunk_identity_levels must reflect the final (post-disambiguation)
+    # record ids, so it is computed after assign_identity, which now runs the
+    # duplicate-id disambiguation with the configured policy (F-07).
     chunk_identity_levels: dict[str, list[int]] = {}
     for record in records:
         keys = all_chunk_identity_keys(
@@ -273,11 +276,10 @@ def build_snapshot(
         descriptor,
     )
 
-    disambiguate_duplicate_ids(
-        records,
-        on_duplicate_id=cfg.identity.on_duplicate_id,
-        sink=sink,
-    )
+    # Duplicate-id disambiguation happens exactly once, inside
+    # assign_identity above, with the configured identity.on_duplicate_id
+    # policy (audit finding F-07: the former second pass here could never see
+    # duplicates and made the "error" mode unreachable).
 
     snapshot_key, content = compute_snapshot_id(records, descriptor_bytes)
 
@@ -495,7 +497,28 @@ def _write_embeddings(
 
 
 def _is_snapshot_dir(path: Path) -> bool:
-    return (path / _MANIFEST_FILE).is_file()
+    """Whether *path* is reliably a DriftLens-owned snapshot directory.
+
+    A bare ``manifest.json`` file name is not ownership evidence: unrelated
+    tools and hand-written files can use the same name.  A directory only
+    counts as a replaceable snapshot when its manifest parses as JSON, its
+    major schema version matches ours, and the structural snapshot payload
+    files are all present.
+    """
+    manifest_path = path / _MANIFEST_FILE
+    if not manifest_path.is_file():
+        return False
+    try:
+        manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(manifest_data, dict):
+        return False
+    schema_version = str(manifest_data.get("schema_version", ""))
+    if schema_version.split(".")[0] != SNAPSHOT_SCHEMA_VERSION.split(".")[0]:
+        return False
+    required = (_RECORDS_FILE, _DOCUMENTS_FILE, _STATISTICS_FILE, _EMBEDDINGS_DIR)
+    return all((path / name).exists() for name in required)
 
 
 def write_snapshot(snapshot: Snapshot, out_dir: Path, *, no_text: bool) -> None:
@@ -621,6 +644,21 @@ def _read_embedding_file(path: Path) -> dict[str, np.ndarray]:
     return result
 
 
+def _dataclass_from_mapping(cls, data: dict[str, Any], *, location: str):
+    """Build *cls* from a mapping, ignoring unknown keys (F-05).
+
+    docs/schema-versioning.md promises 1.x readers ignore unknown optional
+    fields written by newer 1.x writers.  Missing required fields still raise
+    the dataclass TypeError, which is mapped to INVALID_INPUT below.
+    """
+    known = {f.name for f in fields(cls)}
+    filtered = {key: value for key, value in data.items() if key in known}
+    try:
+        return cls(**filtered)
+    except TypeError as exc:
+        raise InvalidInputError(location=location, message=str(exc)) from None
+
+
 def _read_documents(snapshot_dir: Path) -> DocumentTable:
     table = pq.read_table(snapshot_dir / _DOCUMENTS_FILE)
     rows: dict[str, DocumentRow] = {}
@@ -653,10 +691,14 @@ def read_snapshot(snapshot_dir: Path, *, limits: RuntimeLimits, verify_full: boo
     records = _read_records(snapshot_dir, manifest_data)
     documents = _read_documents(snapshot_dir)
     statistics_path = snapshot_dir / _STATISTICS_FILE
-    statistics = StatisticsAccumulator(
-        **json.loads(statistics_path.read_text(encoding="utf-8"))
+    statistics = _dataclass_from_mapping(
+        StatisticsAccumulator,
+        json.loads(statistics_path.read_text(encoding="utf-8")),
+        location=str(statistics_path),
     )
-    manifest = Manifest(**manifest_data)
+    manifest = _dataclass_from_mapping(
+        Manifest, manifest_data, location=str(manifest_path)
+    )
 
     if verify_full:
         descriptor_bytes = build_descriptor(

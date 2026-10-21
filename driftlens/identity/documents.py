@@ -185,6 +185,11 @@ def disambiguate_duplicate_ids(
         duplicate_groups += 1
         for rank, record in enumerate(sorted(group, key=_digest_bytes)):
             record.record_id = f"{key}#{rank}"
+            # The cached digest covers the pre-rename record id; the rename
+            # invalidates it, otherwise snapshot ids verified against final
+            # records mismatch (audit finding F-07).
+            if getattr(record, "_digest_bytes", None) is not None:
+                del record._digest_bytes
 
     if duplicate_groups:
         sink.add(Code.IDENTITY_WARNING, f"{duplicate_groups} duplicate record ids")
@@ -200,6 +205,7 @@ def assign_identity(
     side: SideOptions,
     sink: DiagnosticSink,
     granularity_override: Granularity | None,
+    on_duplicate_id: Literal["suffix", "error"] = "suffix",
 ) -> tuple[list[Record], Granularity, GranularitySource]:
     """Orchestrate hashes -> documents -> granularity -> chunks -> disambiguation."""
 
@@ -268,6 +274,7 @@ def assign_identity(
         record.identity_source = f"chunk_level_{result.level}"
         record.identity_confidence = result.confidence
 
-    on_duplicate_id = getattr(side, "on_duplicate_id", "suffix") or "suffix"
-    disambiguate_duplicate_ids(records, on_duplicate_id=on_duplicate_id, sink=sink)
+    disambiguate_duplicate_ids(
+        records, on_duplicate_id=on_duplicate_id, sink=sink
+    )
     return records, granularity, granularity_source

@@ -291,6 +291,9 @@ def test_release_1_0_gate(workdir) -> None:
 def test_full_suite_green() -> None:
     import pytest as _pytest
 
+    # Prevent any nested-in-nested execution (F-09): this run already covers
+    # the full suite once; deeper recursion adds cost, not coverage.
+    os.environ["DRIFTLENS_SKIP_NESTED_SUITE"] = "1"
     exit_code = _pytest.main(
         [
             "-q",

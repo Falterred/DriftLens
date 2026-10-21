@@ -83,7 +83,12 @@ from driftlens.schema.manifest import (
 )
 from driftlens.schema.snapshot import Snapshot, build_snapshot
 from driftlens.security.limits import RuntimeLimits
-from driftlens.security.redaction import apply_redaction_to_metric
+from driftlens.security.redaction import (
+    apply_redaction_to_metric,
+    redact_chunk_diff_result,
+    redact_document_diff_rows,
+    redact_duplicate_result,
+)
 from driftlens.text.normalize import normalization_version
 from driftlens.text.tokenizer import tokenizer_id
 
@@ -697,6 +702,17 @@ def run_compare(args: argparse.Namespace) -> int:
                 )
                 for metric in dimension.metrics
             ]
+        # F-08: raw identifiers must not leak through any secondary output
+        # path.  Redact the structural diff objects and every derived id
+        # list once, before terminal/JSON/HTML/diff writers see them.
+        _document_rows = redact_document_diff_rows(
+            _document_rows, snapshot_id=redaction_key
+        )
+        chunk_result = redact_chunk_diff_result(
+            chunk_result, snapshot_id=redaction_key
+        )
+        _dups_v1 = redact_duplicate_result(_dups_v1, snapshot_id=redaction_key)
+        _dups_v2 = redact_duplicate_result(_dups_v2, snapshot_id=redaction_key)
 
     breakdown_rows: dict[str, list[BreakdownRow]] = {
         field: compute_breakdown(

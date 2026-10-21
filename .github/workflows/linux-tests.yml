@@ -24,4 +24,9 @@ jobs:
         run: python -m pip install -e ".[dev]"
 
       - name: Run test suite
+        env:
+          # The release gates' nested full-suite runners re-execute the entire
+          # suite recursively (~4x cost). CI runs the suite directly once; the
+          # gates' own non-recursive assertions still execute in full.
+          DRIFTLENS_SKIP_NESTED_SUITE: "1"
         run: python -m pytest -v

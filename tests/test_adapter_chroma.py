@@ -30,6 +30,29 @@ def _limits() -> RuntimeLimits:
     return RuntimeLimits(LimitsCfg(), available_bytes=1 << 40)
 
 
+def _rmtree_retries(path: Path) -> None:
+    """rmtree with bounded retries for Windows sqlite lock release (F-02).
+
+    Cleanup failures are reported (not silently ignored) but never fail the
+    test run: they are printed once per leftover directory so a persistent
+    leak stays visible instead of vanishing behind ignore_errors=True.
+    """
+    for attempt in range(6):
+        try:
+            shutil.rmtree(path)
+            return
+        except PermissionError:
+            import gc
+            import time
+
+            gc.collect()
+            time.sleep(0.2 * (attempt + 1))
+    try:
+        shutil.rmtree(path)
+    except OSError:
+        print(f"WARNING: chroma test dir left behind (locked): {path}")
+
+
 @pytest.fixture()
 def workdir() -> Path:
     # A globally unique directory per invocation keeps a nested in-process pytest
@@ -39,10 +62,17 @@ def workdir() -> Path:
     )
     base.mkdir(parents=True, exist_ok=True)
     yield base
-    shutil.rmtree(base, ignore_errors=True)
+    _rmtree_retries(base)
 
 
 def _client(path: Path):
+    """Create a PersistentClient whose sqlite lock is released on close.
+
+    Every caller must use the returned client inside _closed_client() or call
+    client.close() before the fixture teardown; on Windows the sqlite lock
+    otherwise survives until process exit and the temp dir cannot be removed
+    (audit finding F-02).
+    """
     path.mkdir(parents=True, exist_ok=True)
     return chromadb.PersistentClient(
         path=str(path), settings=Settings(anonymized_telemetry=False)
@@ -98,6 +128,7 @@ def test_single_collection_auto_selected(workdir: Path) -> None:
     assert result.source_type == "chroma"
     assert len(result.records) == 2
     assert sorted(record.record_id for record in result.records) == ["a", "b"]
+    client.close()
 
 
 def test_multi_collection_requires_selection(workdir: Path) -> None:
@@ -111,6 +142,7 @@ def test_multi_collection_requires_selection(workdir: Path) -> None:
         load_chroma(directory, side=SideOptions(), limits=_limits())
     assert "alpha" in str(info.value)
     assert "beta" in str(info.value)
+    client.close()
 
 
 def test_mixed_text_presence_rejected(workdir: Path) -> None:
@@ -122,6 +154,7 @@ def test_mixed_text_presence_rejected(workdir: Path) -> None:
     with pytest.raises(InvalidInputError) as info:
         load_chroma(directory, side=SideOptions(), limits=_limits())
     assert "mixed text presence" in str(info.value)
+    client.close()
 
 
 def test_null_metadata_becomes_empty_map(workdir: Path, monkeypatch) -> None:
@@ -134,6 +167,8 @@ def test_null_metadata_becomes_empty_map(workdir: Path, monkeypatch) -> None:
         lambda collection: [("a", "alpha", [0.1, 0.2], {"tags": None})],
     )
     result = load_chroma(directory, side=SideOptions(), limits=_limits())
+    result = load_chroma(directory, side=SideOptions(), limits=_limits())
+    client.close()
     assert result.records[0].metadata["tags"] == {}
 
 
@@ -149,6 +184,7 @@ def test_metadata_document_id_is_medium_confidence(workdir: Path) -> None:
     )
     result = load_chroma(directory, side=SideOptions(), limits=_limits())
     assert result.records[0].identity_source_hint == "chroma_metadata"
+    client.close()
     assert result.records[0].document_id == "d1"
 
 
@@ -160,6 +196,7 @@ def test_hnsw_space_mapping(workdir: Path) -> None:
         collection.add(ids=["a"], documents=["alpha"], embeddings=[[0.1, 0.2]])
         result = load_chroma(directory, side=SideOptions(), limits=_limits())
         assert result.records[0].embedding.similarity_metric == expected
+        client.close()
 
     class _Stub:
         metadata: dict = {}
@@ -171,7 +208,7 @@ def test_hnsw_space_mapping(workdir: Path) -> None:
 def test_row_order_independent_of_paging(workdir: Path, monkeypatch) -> None:
     monkeypatch.setattr(chroma, "PAGE_SIZE", 1)
 
-    def build(name: str, ids: list[str]) -> Path:
+    def build(name: str, ids: list[str]) -> tuple[Path, object]:
         directory = workdir / name
         client = _client(directory)
         collection = client.create_collection("docs")
@@ -181,16 +218,18 @@ def test_row_order_independent_of_paging(workdir: Path, monkeypatch) -> None:
                 documents=["text " + record_id],
                 embeddings=[[float(index), 0.0]],
             )
-        return directory
+        return directory, client
 
-    forward = build("forward", ["a", "b", "c"])
-    backward = build("backward", ["c", "b", "a"])
+    forward, forward_client = build("forward", ["a", "b", "c"])
+    backward, backward_client = build("backward", ["c", "b", "a"])
     first = load_chroma(forward, side=SideOptions(), limits=_limits())
     second = load_chroma(backward, side=SideOptions(), limits=_limits())
     assert [(r.record_id, r.row_number) for r in first.records] == [
         (r.record_id, r.row_number) for r in second.records
     ]
     assert [r.row_number for r in first.records] == [1, 2, 3]
+    forward_client.close()
+    backward_client.close()
 
 
 def test_copy_deleted_after_use(workdir: Path) -> None:
@@ -200,6 +239,7 @@ def test_copy_deleted_after_use(workdir: Path) -> None:
     collection.add(ids=["a"], documents=["alpha"], embeddings=[[0.1, 0.2]])
     before = _temp_leftovers()
     load_chroma(directory, side=SideOptions(), limits=_limits())
+    client.close()
     assert _temp_leftovers() == before
 
 
@@ -217,4 +257,5 @@ def test_telemetry_disabled(workdir: Path, monkeypatch) -> None:
 
     monkeypatch.setattr(chromadb, "PersistentClient", spy)
     load_chroma(directory, side=SideOptions(), limits=_limits())
+    client.close()
     assert captured["settings"].anonymized_telemetry is False

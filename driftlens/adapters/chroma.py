@@ -118,17 +118,22 @@ def copy_chroma_directory(source: Path, *, limits: RuntimeLimits) -> Path:
 
 
 def _remove_directory(path: Path) -> None:
+    """Best-effort removal of the private copy (Windows sqlite locks).
+
+    The copy is disposable and the data has already been read; a lingering
+    lock must not fail an otherwise successful run (audit F-02/F-14).
+    The leftover is reported instead of silently ignored.
+    """
     delay = 0.05
     for attempt in range(10):
         try:
             shutil.rmtree(path, ignore_errors=False)
             return
         except PermissionError:
-            if attempt == 9:
-                raise
             gc.collect()
             time.sleep(delay)
             delay = min(delay * 2, 0.5)
+    print(f"WARNING: could not remove private chroma copy (locked): {path}")
 
 
 @contextmanager

@@ -120,7 +120,7 @@ def is_identifier_like(
     if field_type not in ("string", "int"):
         return False
     non_null = [value for value in values if value is not None]
-    distinct = len(set(non_null))
+    distinct = _distinct_count(non_null)
     if field_type == "string":
         return distinct > cfg.max_categories
     if not non_null:
@@ -134,6 +134,18 @@ def _distinct_count(non_null: Sequence[Any]) -> int:
         return len(set(non_null))
     except TypeError:
         return len({canonical_json(value) for value in non_null})
+
+
+def _canonical_key(value: Any) -> str:
+    """Hashable string key for any supported metadata value (F-04).
+
+    Categorical comparisons must tolerate the two sides disagreeing about a
+    field's dominant type: a list- or dict-valued field on one side can face a
+    string-typed field on the other, and raw ``Counter(values)`` would raise
+    ``TypeError: unhashable type``.  Canonical JSON gives every value a stable
+    string key, exactly like the category-label collection already does.
+    """
+    return canonical_json(value).decode("utf-8")
 
 
 def build_field_schema(
@@ -287,19 +299,40 @@ def compare_metadata(
             reason = "identifier-like"
         elif schema2.type in ("bool", "string"):
             value, value_reason = js_divergence_categorical(
-                Counter(non1), Counter(non2)
+                Counter(_canonical_key(v) for v in non1),
+                Counter(_canonical_key(v) for v in non2),
             )
             distance = value
             kind = "js"
             reason = value_reason
             field_js = value
         elif schema2.type in ("int", "float", "datetime"):
+            # Only the branch's own value kind participates in the numeric
+            # comparison; a cross-side type change is already reported by
+            # type_changed/type_share metrics, so foreign-kind values are
+            # skipped here instead of crashing float()/_epoch() (F-04).
             if schema2.type == "datetime":
-                first = [_epoch(value) for value in non1]
-                second = [_epoch(value) for value in non2]
+                first = [
+                    _epoch(value)
+                    for value in non1
+                    if isinstance(value, str)
+                ]
+                second = [
+                    _epoch(value)
+                    for value in non2
+                    if isinstance(value, str)
+                ]
             else:
-                first = [float(value) for value in non1]
-                second = [float(value) for value in non2]
+                first = [
+                    float(value)
+                    for value in non1
+                    if isinstance(value, (int, float)) and not isinstance(value, bool)
+                ]
+                second = [
+                    float(value)
+                    for value in non2
+                    if isinstance(value, (int, float)) and not isinstance(value, bool)
+                ]
             value, value_reason = ks_statistic(first, second)
             distance = value
             kind = "ks"
@@ -328,8 +361,12 @@ def compare_metadata(
                 )
             )
         elif schema2.type == "list":
-            lengths1 = [len(value) for value in non1]
-            lengths2 = [len(value) for value in non2]
+            # Length/element statistics apply only to actual list values;
+            # scalar stragglers from a cross-side type change are skipped (F-04).
+            lists1 = [value for value in non1 if isinstance(value, list)]
+            lists2 = [value for value in non2 if isinstance(value, list)]
+            lengths1 = [len(value) for value in lists1]
+            lengths2 = [len(value) for value in lists2]
             value, value_reason = ks_statistic(lengths1, lengths2)
             distance = value
             kind = "ks"
@@ -337,10 +374,14 @@ def compare_metadata(
             field_ks = value
 
             elements1 = Counter(
-                element for value in non1 for element in value
+                _canonical_key(element)
+                for value in lists1
+                for element in value
             )
             elements2 = Counter(
-                element for value in non2 for element in value
+                _canonical_key(element)
+                for value in lists2
+                for element in value
             )
             distinct_elements = len(set(elements1) | set(elements2))
             if distinct_elements <= cfg.max_categories:

@@ -244,6 +244,9 @@ def test_readme_and_pyproject_consistent() -> None:
 def test_full_suite_green() -> None:
     import pytest as _pytest
 
+    # Prevent any nested-in-nested execution: this run already covers the
+    # full suite once (F-09); deeper recursion adds cost, not coverage.
+    os.environ["DRIFTLENS_SKIP_NESTED_SUITE"] = "1"
     exit_code = _pytest.main(
         [
             "-q",
@@ -251,6 +254,10 @@ def test_full_suite_green() -> None:
             str(_TESTS_DIR),
             "--ignore",
             str(_THIS_FILE),
+            # The 1.0 gate nests its own full-suite run; running it here too
+            # would execute the entire suite recursively (audit finding F-09).
+            "--ignore",
+            str(_TESTS_DIR / "test_release_1_0_gate.py"),
             "-p",
             "no:cacheprovider",
         ]

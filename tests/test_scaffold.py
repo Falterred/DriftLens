@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_version() -> None:
-    assert driftlens.__version__ == "0.1.0"
+    assert driftlens.__version__ == "1.0.0"
 
 
 def test_cli_version() -> None:
@@ -24,7 +24,7 @@ def test_cli_version() -> None:
         text=True,
         cwd=ROOT,
     )
-    assert result.stdout == "driftlens 0.1.0\n"
+    assert result.stdout == "driftlens 1.0.0\n"
     assert result.returncode == 0
 
 

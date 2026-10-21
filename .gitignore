@@ -36,6 +36,16 @@ docs/
 #Manual Tests
 manual-tests/
 
-# Generated test data
-tests/_chroma_tmp/
-tests/_parquet_tmp/
+# Audit evidence, manual-test corpus and scratch (local only)
+audit-artifacts/
+
+# Generated test data (PID/random-suffixed temp dirs from test fixtures)
+tests/_chroma_tmp*/
+tests/_parquet_tmp*/
+tests/_snapshot_io_tmp*/
+tests/_remediation_f*_tmp*/
+tests/_release_1_0_gate_tmp/
+.pytest_tmp/
+pytest_tmp_run/
+.pylibs/
+.piptmp/
