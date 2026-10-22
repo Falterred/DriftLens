@@ -134,6 +134,8 @@ def _load_jsonl(path: Path, *, side: SideOptions, limits: RuntimeLimits) -> Side
                 )
             else:
                 ids.append(faiss_id)
+            # Join key, not metadata (see _load_parquet): consume before build.
+            obj.pop("faiss_id", None)
             record = build_record(
                 obj,
                 mapping,
@@ -205,6 +207,10 @@ def _load_parquet(
                 )
             else:
                 ids.append(faiss_id)
+            # The join key is positional bookkeeping, not user metadata:
+            # consuming it here keeps faiss_id out of record.metadata so a
+            # re-keyed successor is not misreported as a metadata change.
+            row.pop("faiss_id", None)
             record = _build_parquet_record(
                 row,
                 mapping,

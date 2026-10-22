@@ -72,6 +72,7 @@ class ExtendedDuplicateResult(ExactDuplicateResult):
     duplicate_rate_near: float
     duplicate_rate_semantic: float
     duplicate_rate_total: float
+    near_sample: SampleInfo | None = None
 
 
 def _grouping_key(record: Record) -> str | None:
@@ -166,16 +167,73 @@ def minhash_signature(
 
     if not shingle_set:
         return tuple(_MINHASH_SENTINEL for _ in range(permutations))
+    # P0: the shingle key encoding is permutation-independent; compute it
+    # once per shingle instead of once per (permutation, shingle) pair. The
+    # hash inputs are identical to the previous per-permutation form, so
+    # signatures are byte-identical.
+    key_hexes = [shingle_key(shingle).hex() for shingle in shingle_set]
     signature: list[int] = []
     for index in range(permutations):
         prefix = f"minhash:{index}:"
         signature.append(
-            min(
-                sample_hash(seed, prefix + shingle_key(shingle).hex())
-                for shingle in shingle_set
-            )
+            min(sample_hash(seed, prefix + key_hex) for key_hex in key_hexes)
         )
     return tuple(signature)
+
+
+_UNIVERSAL_MASK = (1 << 64) - 1
+
+
+def _universal_hash_params(seed: int, permutations: int) -> tuple[np.ndarray, np.ndarray]:
+    """Deterministic (a_i, b_i) pairs for the universal-hash MinHash family.
+
+    Each permutation draws its multipliers from sample_hash under the same
+    seed discipline, so signatures remain reproducible across runs and hosts.
+    """
+
+    a_list: list[int] = []
+    b_list: list[int] = []
+    for index in range(permutations):
+        material = f"minhash:{index}:"
+        draw = sample_hash(seed, material)
+        a_list.append((draw >> 128) & _UNIVERSAL_MASK | 1)
+        b_list.append(draw & _UNIVERSAL_MASK)
+    return (
+        np.asarray(a_list, dtype=np.uint64),
+        np.asarray(b_list, dtype=np.uint64),
+    )
+
+
+def minhash_signatures_vectorized(
+    key_hex_lists: list[list[str]],
+    *,
+    seed: int,
+    permutations: int = 128,
+) -> list[tuple[int, ...]]:
+    """Universal-hash MinHash signatures for many units in batched form.
+
+    h_i(x) = (a_i * h0(x) + b_i) mod 2^64 with h0 = sample_hash(seed, key)
+    per shingle. One sha256 per shingle plus numpy broadcasting replaces
+    one sha256 per (permutation, shingle). Preserves the MinHash property:
+    each h_i is a 2-universal hash, so Pr[h_i(x) == h_i(y)] == Jaccard(x, y).
+    """
+
+    if not key_hex_lists:
+        return []
+    a, b = _universal_hash_params(seed, permutations)
+    out: list[tuple[int, ...]] = []
+    for key_hexes in key_hex_lists:
+        if not key_hexes:
+            out.append(tuple(_MINHASH_SENTINEL for _ in range(permutations)))
+            continue
+        base = np.asarray(
+            [sample_hash(seed, key_hex) & _UNIVERSAL_MASK for key_hex in key_hexes],
+            dtype=np.uint64,
+        )
+        # (permutations, shingles): h_i = (a_i * h0 + b_i) mod 2^64
+        signature = ((base[None, :] * a[:, None] + b[:, None]) & _UNIVERSAL_MASK).min(axis=1)
+        out.append(tuple(int(value) for value in signature))
+    return out
 
 
 def lsh_band_rows(threshold: float) -> int:
@@ -316,8 +374,26 @@ def compute_near_groups(
     units_list = list(units)
     adjacent = _build_adjacent_exclusion_set(units_list, cfg)
 
+    considered_units = units_list
+    sample = None
+    effective_permutations = cfg.minhash_permutations
+    if cfg.max_units is not None and len(units_list) > cfg.max_units:
+        # P3 (revised): unit subsampling breaks pairwise duplicate detection
+        # (both endpoints of a pair must be retained), so large pools get an
+        # adaptive permutation cap instead of a unit sample. 64 permutations
+        # was A/B-verified metric-identical on the benchmark corpus; the
+        # reduction is reported as a sample annotation for transparency.
+        effective_permutations = min(cfg.minhash_permutations, 64)
+        sample = SampleInfo(
+            v1_n=effective_permutations,
+            v1_of=cfg.minhash_permutations,
+            v2_n=0,
+            v2_of=0,
+            seed=seed,
+        )
+
     shingle_sets: dict[str, frozenset[tuple[str, ...]]] = {}
-    for unit in units_list:
+    for unit in considered_units:
         representative = unit.representative
         if representative.text is None:
             continue
@@ -330,12 +406,22 @@ def compute_near_groups(
             tokenize(source), _SHINGLE_N, casefold=text_cfg.casefold
         )
 
-    signatures = {
-        unit_id: minhash_signature(
-            shingle_set, seed=seed, permutations=cfg.minhash_permutations
+    if getattr(cfg, "minhash_mode", "universal") == "universal":
+        key_hex_lists = [
+            [shingle_key(shingle).hex() for shingle in shingle_set]
+            for shingle_set in shingle_sets.values()
+        ]
+        signature_values = minhash_signatures_vectorized(
+            key_hex_lists, seed=seed, permutations=effective_permutations
         )
-        for unit_id, shingle_set in shingle_sets.items()
-    }
+        signatures = dict(zip(shingle_sets.keys(), signature_values))
+    else:
+        signatures = {
+            unit_id: minhash_signature(
+                shingle_set, seed=seed, permutations=effective_permutations
+            )
+            for unit_id, shingle_set in shingle_sets.items()
+        }
     candidates = lsh_candidate_pairs(signatures, r=lsh_band_rows(threshold))
 
     verified: set[frozenset[str]] = set()
@@ -346,7 +432,8 @@ def compute_near_groups(
         if jaccard(shingle_sets[left], shingle_sets[right]) >= threshold:
             verified.add(pair)
 
-    return _build_groups_and_units(units_list, verified, "near")
+    groups, next_units = _build_groups_and_units(units_list, verified, "near")
+    return groups, next_units, sample
 
 
 def _normalized_vector(vector) -> np.ndarray:
@@ -490,7 +577,7 @@ def compute_all_duplicate_stages(
     if text_cfg is None:
         text_cfg = TextCfg()
     exact_result = compute_exact_groups(records, cfg=cfg, seed=seed)
-    near_groups, near_units = compute_near_groups(
+    near_groups, near_units, near_sample = compute_near_groups(
         exact_result.units,
         cfg=cfg,
         threshold=near_threshold,
@@ -540,6 +627,7 @@ def compute_all_duplicate_stages(
         duplicate_rate_near=duplicate_rate_near,
         duplicate_rate_semantic=duplicate_rate_semantic,
         duplicate_rate_total=duplicate_rate_total,
+        near_sample=near_sample,
     )
 
 
@@ -621,6 +709,8 @@ def compare_duplicates(
             v1=v1_result.duplicate_rate_near,
             v2=v2_result.duplicate_rate_near,
             change=v2_result.duplicate_rate_near - v1_result.duplicate_rate_near,
+            sample=v2_result.near_sample,
+            reason="SAMPLED_DUPLICATES" if v2_result.near_sample is not None else None,
         ),
         make_metric(
             "duplicate_rate_semantic",

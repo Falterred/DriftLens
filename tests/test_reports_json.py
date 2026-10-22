@@ -193,7 +193,7 @@ def test_determinism_level_exact_when_no_float_metrics() -> None:
 
 
 def test_report_schema_version_field() -> None:
-    assert _build(_empty_health())["report_schema_version"] == "1.0"
+    assert _build(_empty_health())["report_schema_version"] == "1.1"
 
 
 def test_written_file_is_valid_json(workdir) -> None:

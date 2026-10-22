@@ -41,6 +41,7 @@ PRIVACY_MAX_LABEL_CATEGORIES = 20
 
 _VALID_ON_DUPLICATE_ID = ("suffix", "error")
 _VALID_CLUSTER_MODES = ("auto", "on", "off")
+_VALID_MINHASH_MODES = ("universal", "sha256")
 _VALID_BASELINE_METHODS = ("mean_std", "quantile")
 _VALID_RETRIEVAL_MODES = ("auto", "lexical", "dense", "both")
 _VALID_CI_POLICIES = ("warn", "fail", "ignore")
@@ -128,6 +129,8 @@ class DuplicatesCfg:
     ignore_adjacent_chunks: bool = True
     max_exact_vectors: int = 50000
     minhash_permutations: int = 128
+    minhash_mode: str = "universal"
+    max_units: int | None = None
 
 
 @dataclass
@@ -144,6 +147,8 @@ class ChunkingCfg:
     oversized: int = 2048
     token_safety_factor: float = 1.3
     embedding_max_tokens: int | None = None
+    target_tokens: int | None = None
+    target_tolerance: float = 0.25
 
 
 @dataclass
@@ -320,6 +325,21 @@ def validate_config(cfg: Config) -> None:
         raise _invalid(f"invalid identity.on_duplicate_id {cfg.identity.on_duplicate_id!r}")
     if cfg.cluster.mode not in _VALID_CLUSTER_MODES:
         raise _invalid(f"invalid cluster.mode {cfg.cluster.mode!r}")
+    if cfg.duplicates.minhash_mode not in _VALID_MINHASH_MODES:
+        raise _invalid(
+            f"invalid duplicates.minhash_mode {cfg.duplicates.minhash_mode!r}"
+        )
+    if (
+        cfg.duplicates.max_units is not None
+        and cfg.duplicates.max_units < 1
+    ):
+        raise _invalid(f"invalid duplicates.max_units {cfg.duplicates.max_units!r}")
+    if cfg.chunking.target_tokens is not None and cfg.chunking.target_tokens < 1:
+        raise _invalid(f"invalid chunking.target_tokens {cfg.chunking.target_tokens!r}")
+    if cfg.chunking.target_tolerance <= 0:
+        raise _invalid(
+            f"invalid chunking.target_tolerance {cfg.chunking.target_tolerance!r}"
+        )
     if cfg.baseline.method not in _VALID_BASELINE_METHODS:
         raise _invalid(f"invalid baseline.method {cfg.baseline.method!r}")
     if cfg.retrieval.mode not in _VALID_RETRIEVAL_MODES:

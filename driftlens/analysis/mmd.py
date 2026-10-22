@@ -34,6 +34,7 @@ class MMDResult:
     reason: str | None
     sample_v1: SampleInfo | None
     sample_v2: SampleInfo | None
+    mmd_squared_raw: float | None = None
 
 
 def rbf_kernel_matrix(x: np.ndarray, y: np.ndarray, sigma: float) -> np.ndarray:
@@ -85,18 +86,27 @@ def _subset(
 def _mmd_from_kernel(
     kernel_matrix: np.ndarray, v1_indices: Sequence[int], v2_indices: Sequence[int]
 ) -> float:
-    """Unbiased MMD statistic recomputed by reindexing a fixed kernel matrix."""
+    """Unbiased MMD statistic recomputed by reindexing a fixed kernel matrix.
+
+    P2: gathers use flat fancy indexing on a cached raveled kernel instead of
+    three np.ix_ blocks plus np.trace. The summed element sets are identical
+    to the previous form; only floating-point summation order can differ.
+    """
 
     kernel = np.asarray(kernel_matrix, dtype=np.float64)
     m = len(v1_indices)
     n = len(v2_indices)
     if m < 2 or n < 2:
         return 0.0
-    kxx = kernel[np.ix_(list(v1_indices), list(v1_indices))]
-    kyy = kernel[np.ix_(list(v2_indices), list(v2_indices))]
-    kxy = kernel[np.ix_(list(v1_indices), list(v2_indices))]
-    sum_xx = (kxx.sum() - np.trace(kxx)) / (m * (m - 1))
-    sum_yy = (kyy.sum() - np.trace(kyy)) / (n * (n - 1))
+    rows = np.fromiter(v1_indices, dtype=np.intp, count=m)
+    cols = np.fromiter(v2_indices, dtype=np.intp, count=n)
+    size = kernel.shape[0]
+    flat = kernel.reshape(-1)
+    kxx = flat[rows[:, None] * size + rows[None, :]]
+    kyy = flat[cols[:, None] * size + cols[None, :]]
+    kxy = flat[rows[:, None] * size + cols[None, :]]
+    sum_xx = (kxx.sum() - flat[rows * size + rows].sum()) / (m * (m - 1))
+    sum_yy = (kyy.sum() - flat[cols * size + cols].sum()) / (n * (n - 1))
     sum_xy = kxy.sum() / (m * n)
     return math.sqrt(max(float(sum_xx + sum_yy - 2 * sum_xy), 0.0))
 
@@ -187,6 +197,7 @@ def compute_mmd(
     return MMDResult(
         mmd=round9(mmd),
         mmd_squared=round9(mmd_squared),
+        mmd_squared_raw=float(mmd_squared_raw),
         sigma=round9(sigma),
         estimator="unbiased",
         reason=None,
@@ -302,6 +313,12 @@ def compare_mmd(
         "sigma": result.sigma,
         "estimator": result.estimator,
     }
+    if (
+        getattr(result, "mmd_squared_raw", None) is not None
+        and result.mmd_squared == 0.0
+    ):
+        details["mmd_squared_raw"] = result.mmd_squared_raw
+        details["clamped_to_zero"] = True
     if result.reason is None and result.mmd is not None and result.sigma:
         significance = _mmd_significance(
             v1,

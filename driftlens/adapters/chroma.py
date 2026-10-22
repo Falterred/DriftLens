@@ -94,7 +94,12 @@ def read_schema_identifier(sqlite_path: Path) -> str:
 
 
 def _new_temp_directory() -> Path:
-    base = Path(tempfile.gettempdir())
+    # 4b: honour an explicit workdir override for environments where the
+    # default temp area is unsuitable for ChromaDB's native bindings.
+    override = os.environ.get("DRIFTLENS_CHROMA_WORKDIR")
+    base = Path(override) if override else Path(tempfile.gettempdir())
+    if override:
+        base.mkdir(parents=True, exist_ok=True)
     path = base / f"driftlens-chroma-{os.getpid()}-{secrets.token_hex(8)}"
     path.mkdir()
     os.chmod(path, 0o700)

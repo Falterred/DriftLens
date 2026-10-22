@@ -33,7 +33,8 @@ from driftlens.analysis.content import (
 from driftlens.analysis.duplicates import compare_duplicates
 from driftlens.analysis.embeddings import analyze_embeddings
 from driftlens.analysis.health import Metric, build_health_report
-from driftlens.analysis.metadata import compare_metadata
+from driftlens.analysis.metadata import changed_document_ids, compare_metadata
+from driftlens.analysis.temporal import compute_timestamp_inconsistent_flags
 from driftlens.analysis.mmd import compare_mmd
 from driftlens.config.loader import effective_side_options, load_config
 from driftlens.config.schema import Config, SideOptions
@@ -132,6 +133,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     compare.add_argument("input_b")
     compare.add_argument("--config")
     compare.add_argument("--quiet", action="store_true")
+    compare.add_argument("--no-timestamp", action="store_true")
     compare.add_argument("--json-out", dest="json_out")
     compare.add_argument("--report-out", dest="report_out")
     compare.add_argument("--diff-out", dest="diff_out")
@@ -174,6 +176,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
     compare.add_argument("--bandwidth", dest="analysis.bandwidth", type=float)
     compare.add_argument(
         "--embedding-max-tokens", dest="chunking.embedding_max_tokens", type=int
+    )
+    compare.add_argument(
+        "--chunking-target-tokens", dest="chunking.target_tokens", type=int
+    )
+    compare.add_argument(
+        "--duplicates-max-units", dest="duplicates.max_units", type=int
+    )
+    compare.add_argument(
+        "--minhash-permutations", dest="duplicates.minhash_permutations", type=int
     )
     compare.add_argument("--max-records", dest="limits.max_records", type=int)
     compare.add_argument("--max-dimension", dest="limits.max_dimension", type=int)
@@ -579,10 +590,36 @@ def run_compare(args: argparse.Namespace) -> int:
     apply_strict_compat(compat, strict_compat=getattr(args, "strict_compat", False))
 
     # Stage 6 - analysis.
+    common_record_ids_pre = {
+        record.record_id for record in v1_snapshot.records
+    } & {record.record_id for record in v2_snapshot.records}
+    meta_changed_ids = changed_document_ids(
+        v1_snapshot,
+        v2_snapshot,
+        cfg=cfg.metadata,
+        common_record_ids=common_record_ids_pre,
+    )
     with guarded("analysis:content"):
         _document_rows, chunk_result, content_metrics = compare_content(
-            v1_snapshot, v2_snapshot, cfg=cfg, sink=sink
+            v1_snapshot,
+            v2_snapshot,
+            cfg=cfg,
+            sink=sink,
+            metadata_changed_ids=meta_changed_ids,
         )
+    v1_records_by_doc: dict[str, list] = {}
+    v2_records_by_doc: dict[str, list] = {}
+    for record in v1_snapshot.records:
+        if record.document_id is not None:
+            v1_records_by_doc.setdefault(record.document_id, []).append(record)
+    for record in v2_snapshot.records:
+        if record.document_id is not None:
+            v2_records_by_doc.setdefault(record.document_id, []).append(record)
+    ts_flagged = compute_timestamp_inconsistent_flags(
+        _document_rows, None, v1_records_by_doc, v2_records_by_doc
+    )
+    for row in _document_rows:
+        row.timestamp_inconsistent = row.document_id in ts_flagged
     with guarded("analysis:chunking"):
         chunking_res = compare_chunking(v1_snapshot, v2_snapshot, cfg=cfg)
     chunking_metrics = list(chunking_res)
@@ -778,6 +815,14 @@ def run_compare(args: argparse.Namespace) -> int:
     if diagnostic_active and not getattr(args, "ci", False):
         print("DIAGNOSTIC MODE: document text excerpts are included in --diff-out")
     if getattr(args, "ci", False):
+        for dim_name, dim in health.dimensions.items():
+            if dim.status == "FAIL" and cfg.ci.fail_on.get(dim_name) is None:
+                message = (
+                    "WARNING: dimension "
+                    + dim_name.upper()
+                    + " has status FAIL but no ci.fail_on gate; it does not affect the exit code."
+                )
+                print(message, file=sys.stderr)
         text, exit_code_ci = render_ci_report(health, cfg=cfg.ci)
     elif getattr(args, "quiet", False):
         text = render_quiet_report(health)
@@ -809,6 +854,7 @@ def run_compare(args: argparse.Namespace) -> int:
             diff_artifact_paths=diff_artifact_paths,
             driftlens_version=__version__,
             breakdowns=breakdowns_json or None,
+            no_timestamp=bool(getattr(args, "no_timestamp", False)),
         )
         write_report_json(report, Path(args.json_out))
 
