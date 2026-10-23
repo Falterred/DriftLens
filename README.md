@@ -10,6 +10,25 @@ DriftLens compares two versions of a retrieval dataset and tells you *what chang
 
 When a RAG knowledge base is re-crawled, re-chunked, or re-embedded, everything downstream silently shifts: chunks vanish, duplicates creep in, embeddings change under a new model version. DriftLens turns that silent shift into a reviewable, gateable diff so you can decide whether to re-index, alert, or roll back.
 
+## Product design
+
+Three interactive diagrams (dark/light themes, zoom, pan; fully offline single-file HTML) explain how DriftLens is put together. Every node links to the source file and lines it describes.
+
+| Diagram | What it answers | File |
+|---|---|---|
+| System architecture | What are the pieces (CLI, adapters, identity, analysis, reports) and how do they connect? | [docs/diagrams/driftlens-architecture.html](docs/diagrams/driftlens-architecture.html) |
+| compare pipeline | What are the seven stages a comparison passes through, and where can it fail or suspend? | [docs/diagrams/driftlens-compare-pipeline.html](docs/diagrams/driftlens-compare-pipeline.html) |
+| Data flow | How do two dataset versions become snapshots, reports, and a CI decision? | [docs/diagrams/driftlens-dataflow.html](docs/diagrams/driftlens-dataflow.html) |
+
+### Design decisions that shape usage
+
+- **Snapshots are the contract.** `driftlens snapshot` freezes a dataset into parquet + a manifest with a content-addressed `snapshot_id`. Compare accepts raw sources or snapshot dirs; snapshots make runs reproducible and diffable over time.
+- **Identity before analysis.** A five-level identity model (explicit ids → document-id metadata → content hashes) decides what "the same document" means before any drift is measured. A renamed id is ADDDED + REMOVED, never MODIFIED.
+- **Compatibility gating is explicit.** If the embedding model or space changed between versions, affected analyses are SKIPPED with a reason code instead of silently comparing incompatible vectors.
+- **One process, seven dimensions.** Content, chunking, metadata, duplication, embeddings (MMD), clusters, and retrieval run as guarded stages; a failure names its stage.
+- **Determinism is a feature.** Given the same inputs, seed, and flags, outputs are byte-identical (use `--no-timestamp` for CI diffing). Sampling is seeded and reported in the metrics it affects.
+- **Honest scope.** DriftLens measures structural change. Retrieval metrics only run with your eval set; a low drift score never certifies answer quality.
+
 ## Install
 
 Requires Python 3.10–3.13.
