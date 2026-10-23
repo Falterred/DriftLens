@@ -172,7 +172,7 @@ The test suite is fully offline and deterministic.
 
 ## Status
 
-DriftLens 1.1 (report schema 1.1). Released under the [MIT License](LICENSE).
+DriftLens 1.1.0 (report schema 1.1). Released under the [MIT License](LICENSE).
 
 ---
 
