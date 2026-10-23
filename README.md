@@ -85,21 +85,40 @@ METADATA [UNBASELINED]
 
 Identity comes from explicit id columns when present, metadata document-id candidates (`source_id`, `file`, `url`, …), or content hashes as a last resort. Renaming an id is an `ADDED` + `REMOVED` pair, never a `MODIFIED`. See `docs/architecture.md` for the full five-level identity model.
 
+### Tuning and large corpora
+
+```bash
+# Bound duplicate-detection cost on large corpora (perm cap reported in metrics)
+driftlens compare snaps/v1 snaps/v2 --duplicates-max-units 2000
+
+# Fewer MinHash permutations (A/B-verified metric-identical at 64)
+driftlens compare snaps/v1 snaps/v2 --minhash-permutations 64
+
+# Flag chunks outside your target size band (e.g. 512 tokens ±25%)
+driftlens compare snaps/v1 snaps/v2 --chunking-target-tokens 512
+```
+
+ChromaDB on a locked-down host? Set `DRIFTLENS_CHROMA_WORKDIR` to move the
+private DB copy out of `%TEMP%`.
+
 ## Reports and CI gating
 
 ```bash
 driftlens compare snaps/v1 snaps/v2 \
   --json-out report.json \
   --report-out report.html \
-  --diff-out diffdir/
+  --diff-out diffdir/   # per-doc rows incl. metadata_changed + timestamp_inconsistent flags
 
 # CI mode: exit code reflects your gates
 driftlens compare snaps/v1 snaps/v2 --ci --config gates.yml
+
+# Byte-identical JSON reports for diffing in CI (fixed created_at sentinel)
+driftlens compare snaps/v1 snaps/v2 --json-out report.json --no-timestamp
 ```
 
 `--ci` exit codes: `0` all gated dimensions pass · `1` a gated dimension is in WARN · `2` a gated dimension is in FAIL · `3`–`8` fatal errors (invalid input, format, internal, dependency, limit).
 
-Dimensions are gated by `ci.fail_on`; thresholds alone do not gate the exit code. Example `gates.yml`:
+Dimensions are gated by `ci.fail_on`; thresholds alone do not gate the exit code. Since 1.1, `--ci` prints a stderr warning whenever a dimension is FAIL but ungated, so a red-but-zero run is never silent. Example `gates.yml`:
 
 ```yaml
 drift:
@@ -153,7 +172,7 @@ The test suite is fully offline and deterministic.
 
 ## Status
 
-DriftLens 1.0. Released under the [MIT License](LICENSE).
+DriftLens 1.1 (report schema 1.1). Released under the [MIT License](LICENSE).
 
 ---
 
