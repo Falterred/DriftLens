@@ -10,6 +10,25 @@ DriftLens compares two versions of a retrieval dataset and tells you *what chang
 
 When a RAG knowledge base is re-crawled, re-chunked, or re-embedded, everything downstream silently shifts: chunks vanish, duplicates creep in, embeddings change under a new model version. DriftLens turns that silent shift into a reviewable, gateable diff so you can decide whether to re-index, alert, or roll back.
 
+## Product design
+
+Three interactive diagrams (dark/light themes, zoom, pan; fully offline single-file HTML) explain how DriftLens is put together. Every node links to the source file and lines it describes.
+
+| Diagram | What it answers | File |
+|---|---|---|
+| System architecture | What are the pieces (CLI, adapters, identity, analysis, reports) and how do they connect? | [docs/diagrams/driftlens-architecture.html](docs/diagrams/driftlens-architecture.html) |
+| compare pipeline | What are the seven stages a comparison passes through, and where can it fail or suspend? | [docs/diagrams/driftlens-compare-pipeline.html](docs/diagrams/driftlens-compare-pipeline.html) |
+| Data flow | How do two dataset versions become snapshots, reports, and a CI decision? | [docs/diagrams/driftlens-dataflow.html](docs/diagrams/driftlens-dataflow.html) |
+
+### Design decisions that shape usage
+
+- **Snapshots are the contract.** `driftlens snapshot` freezes a dataset into parquet + a manifest with a content-addressed `snapshot_id`. Compare accepts raw sources or snapshot dirs; snapshots make runs reproducible and diffable over time.
+- **Identity before analysis.** A five-level identity model (explicit ids → document-id metadata → content hashes) decides what "the same document" means before any drift is measured. A renamed id is ADDDED + REMOVED, never MODIFIED.
+- **Compatibility gating is explicit.** If the embedding model or space changed between versions, affected analyses are SKIPPED with a reason code instead of silently comparing incompatible vectors.
+- **One process, seven dimensions.** Content, chunking, metadata, duplication, embeddings (MMD), clusters, and retrieval run as guarded stages; a failure names its stage.
+- **Determinism is a feature.** Given the same inputs, seed, and flags, outputs are byte-identical (use `--no-timestamp` for CI diffing). Sampling is seeded and reported in the metrics it affects.
+- **Honest scope.** DriftLens measures structural change. Retrieval metrics only run with your eval set; a low drift score never certifies answer quality.
+
 ## Install
 
 Requires Python 3.10–3.13.
@@ -66,21 +85,40 @@ METADATA [UNBASELINED]
 
 Identity comes from explicit id columns when present, metadata document-id candidates (`source_id`, `file`, `url`, …), or content hashes as a last resort. Renaming an id is an `ADDED` + `REMOVED` pair, never a `MODIFIED`. See `docs/architecture.md` for the full five-level identity model.
 
+### Tuning and large corpora
+
+```bash
+# Bound duplicate-detection cost on large corpora (perm cap reported in metrics)
+driftlens compare snaps/v1 snaps/v2 --duplicates-max-units 2000
+
+# Fewer MinHash permutations (A/B-verified metric-identical at 64)
+driftlens compare snaps/v1 snaps/v2 --minhash-permutations 64
+
+# Flag chunks outside your target size band (e.g. 512 tokens ±25%)
+driftlens compare snaps/v1 snaps/v2 --chunking-target-tokens 512
+```
+
+ChromaDB on a locked-down host? Set `DRIFTLENS_CHROMA_WORKDIR` to move the
+private DB copy out of `%TEMP%`.
+
 ## Reports and CI gating
 
 ```bash
 driftlens compare snaps/v1 snaps/v2 \
   --json-out report.json \
   --report-out report.html \
-  --diff-out diffdir/
+  --diff-out diffdir/   # per-doc rows incl. metadata_changed + timestamp_inconsistent flags
 
 # CI mode: exit code reflects your gates
 driftlens compare snaps/v1 snaps/v2 --ci --config gates.yml
+
+# Byte-identical JSON reports for diffing in CI (fixed created_at sentinel)
+driftlens compare snaps/v1 snaps/v2 --json-out report.json --no-timestamp
 ```
 
 `--ci` exit codes: `0` all gated dimensions pass · `1` a gated dimension is in WARN · `2` a gated dimension is in FAIL · `3`–`8` fatal errors (invalid input, format, internal, dependency, limit).
 
-Dimensions are gated by `ci.fail_on`; thresholds alone do not gate the exit code. Example `gates.yml`:
+Dimensions are gated by `ci.fail_on`; thresholds alone do not gate the exit code. Since 1.1, `--ci` prints a stderr warning whenever a dimension is FAIL but ungated, so a red-but-zero run is never silent. Example `gates.yml`:
 
 ```yaml
 drift:
@@ -134,7 +172,7 @@ The test suite is fully offline and deterministic.
 
 ## Status
 
-DriftLens 1.0. Released under the [MIT License](LICENSE).
+DriftLens 1.1.0 (report schema 1.1). Released under the [MIT License](LICENSE).
 
 ---
 

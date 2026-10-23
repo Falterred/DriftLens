@@ -219,6 +219,40 @@ def _changed_count(
     return changed
 
 
+def changed_document_ids(
+    v1: Snapshot,
+    v2: Snapshot,
+    *,
+    cfg: MetadataCfg,
+    common_record_ids: set[str],
+) -> set[str]:
+    """Document ids of common chunks whose flattened metadata differs (D1).
+
+    A document is flagged when ANY chunk of it changed ANY metadata field.
+    Reuses the flattening and canonical-JSON rules of the aggregate METADATA
+    dimension, so the per-document flag cannot disagree with fields_modified.
+    """
+
+    v1_flat = _flatten_snapshot(v1, cfg)
+    v2_flat = _flatten_snapshot(v2, cfg)
+    by_doc_v1: dict[str, str | None] = {}
+    for record in v1.records:
+        if record.document_id is not None:
+            by_doc_v1[record.record_id] = record.document_id
+    flagged: set[str] = set()
+    for record_id in common_record_ids:
+        first = v1_flat.get(record_id, {})
+        second = v2_flat.get(record_id, {})
+        if first.keys() != second.keys() or any(
+            canonical_json(first.get(field)) != canonical_json(second.get(field))
+        for field in first
+        ):
+            document_id = by_doc_v1.get(record_id)
+            if document_id is not None:
+                flagged.add(document_id)
+    return flagged
+
+
 def _drift(
     field: str,
     schema1: FieldSchema,

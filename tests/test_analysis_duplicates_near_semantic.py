@@ -170,7 +170,7 @@ def test_near_group_verified_by_exact_jaccard(monkeypatch) -> None:
     assert jaccard(left_shingles, right_shingles) < 0.9
 
     units = [_unit("a", text=left_text), _unit("b", text=right_text)]
-    groups, _next_units = compute_near_groups(
+    groups, _next_units, _sample = compute_near_groups(
         units, cfg=DuplicatesCfg(), threshold=0.9, seed=42
     )
     assert groups == []
@@ -181,7 +181,7 @@ def test_near_adjacent_chunks_excluded_by_default() -> None:
         _unit("a", text=_base_text(), document_id="doc", chunk_index=0),
         _unit("b", text=_one_word_changed(), document_id="doc", chunk_index=1),
     ]
-    groups, _next_units = compute_near_groups(
+    groups, _next_units, _sample = compute_near_groups(
         units, cfg=DuplicatesCfg(), threshold=0.5, seed=42
     )
     assert groups == []
@@ -192,7 +192,7 @@ def test_near_adjacent_chunks_included_when_disabled() -> None:
         _unit("a", text=_base_text(), document_id="doc", chunk_index=0),
         _unit("b", text=_one_word_changed(), document_id="doc", chunk_index=1),
     ]
-    groups, _next_units = compute_near_groups(
+    groups, _next_units, _sample = compute_near_groups(
         units,
         cfg=DuplicatesCfg(ignore_adjacent_chunks=False),
         threshold=0.5,

@@ -447,6 +447,7 @@ def compare_content(
     *,
     cfg: Config,
     sink: DiagnosticSink,
+    metadata_changed_ids: set[str] | None = None,
 ) -> tuple[list[DocumentDiffRow], ChunkDiffResult, list[Metric]]:
     """Orchestrate document reconstruction, diffing and content metrics."""
     check_doc_identity_mismatch(v1.records, v2.records, sink)
@@ -468,7 +469,12 @@ def compare_content(
     v1_recon = _reconstruct_all(v1, cfg)
     v2_recon = _reconstruct_all(v2, cfg)
     rows = diff_documents(
-        v1.documents, v2.documents, v1_recon, v2_recon, cfg=cfg.documents
+        v1.documents,
+        v2.documents,
+        v1_recon,
+        v2_recon,
+        cfg=cfg.documents,
+        metadata_changed_ids=metadata_changed_ids,
     )
 
     if v1.manifest.granularity != v2.manifest.granularity:

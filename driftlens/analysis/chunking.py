@@ -360,6 +360,31 @@ def compare_chunking(v1: Snapshot, v2: Snapshot, *, cfg: Config) -> ChunkingComp
             )
         )
 
+    if cfg.chunking.target_tokens is not None:
+        # 4a: target-size band (REPORT_ONLY counts). A chunk is below/above
+        # target when its token count falls outside
+        # target_tokens * (1 -/+ target_tolerance). Nothing is emitted when
+        # no band is configured (default), so existing reports are unchanged.
+        low = cfg.chunking.target_tokens * (1.0 - cfg.chunking.target_tolerance)
+        high = cfg.chunking.target_tokens * (1.0 + cfg.chunking.target_tolerance)
+
+        def _band_counts(snapshot) -> tuple[int, int]:
+            below = above = 0
+            for record in snapshot.records:
+                count = record.token_count
+                if count is None:
+                    continue
+                if count < low:
+                    below += 1
+                elif count > high:
+                    above += 1
+            return below, above
+
+        v1_below, v1_above = _band_counts(v1)
+        v2_below, v2_above = _band_counts(v2)
+        metrics.append(_count_metric("chunks_below_target", v1_below, v2_below))
+        metrics.append(_count_metric("chunks_above_target", v1_above, v2_above))
+
     v1_overlap = v1_profile.overlap_estimate
     v2_overlap = v2_profile.overlap_estimate
     if v1_overlap is not None and v2_overlap is not None:

@@ -16,7 +16,10 @@ from driftlens.schema.manifest import Manifest
 # Frozen for DriftLens 1.0 (Step 51): additive fields only may bump the
 # minor; any other change requires a new major schema (out of 1.x).
 # See docs/schema-versioning.md.
-REPORT_SCHEMA_VERSION = "1.0"
+# 1.1: additive - mmd details.mmd_squared_raw/clamped_to_zero, duplicates
+# sample annotation + SAMPLED_DUPLICATES reason, optional
+# chunks_below_target/chunks_above_target chunking metrics.
+REPORT_SCHEMA_VERSION = "1.1"
 
 
 class BorderlineCounter:
@@ -158,12 +161,17 @@ def build_report_json(
     diff_artifact_paths: dict[str, str],
     driftlens_version: str,
     breakdowns: dict[str, list[dict]] | None = None,
+    no_timestamp: bool = False,
 ) -> dict:
     """Build the full section 15.7 report object."""
     report = {
         "report_schema_version": REPORT_SCHEMA_VERSION,
         "driftlens_version": driftlens_version,
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": (
+            "1970-01-01T00:00:00+00:00"
+            if no_timestamp
+            else datetime.now(timezone.utc).isoformat()
+        ),
         "snapshots": {
             "v1": _snapshot_summary(v1_manifest),
             "v2": _snapshot_summary(v2_manifest),

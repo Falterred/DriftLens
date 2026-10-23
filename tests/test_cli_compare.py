@@ -126,7 +126,7 @@ def test_json_out_written(workdir):
     code = _run(["compare", str(first), str(second), "--json-out", str(out)])
     assert code == 0
     payload = json.loads(out.read_text(encoding="utf-8"))
-    assert payload["report_schema_version"] == "1.0"
+    assert payload["report_schema_version"] == "1.1"
 
 
 def test_report_out_written(workdir):

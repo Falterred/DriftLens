@@ -68,7 +68,7 @@ def _load_cli_reference_generator() -> Any:
 def test_schema_freeze_literals() -> None:
     """1.0 stays frozen: both published schema versions are literal MAJOR.MINOR."""
     assert SNAPSHOT_SCHEMA_VERSION == "1.0"
-    assert REPORT_SCHEMA_VERSION == "1.0"
+    assert REPORT_SCHEMA_VERSION == "1.1"
     for version in (SNAPSHOT_SCHEMA_VERSION, REPORT_SCHEMA_VERSION):
         assert re.fullmatch(r"[0-9]+\.[0-9]+", version)
 
